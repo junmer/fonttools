@@ -1,6 +1,7 @@
 """
 Merge OpenType Layout tables (GDEF / GPOS / GSUB).
 """
+
 import os
 import copy
 import enum
@@ -81,7 +82,6 @@ class Merger(object):
         typ = type(thing)
 
         for celf in celf.mro():
-
             mergers = getattr(celf, "mergers", None)
             if mergers is None:
                 break
@@ -318,7 +318,13 @@ def merge(merger, self, lst):
     ):
         self.Value = otBase.ValueRecord(valueFormat, self.Value)
         if valueFormat != 0:
-            merger.mergeThings(self.Value, [v.Value for v in lst])
+            # If v.Value is None, it means a kerning of 0; we want
+            # it to participate in the model still.
+            # https://github.com/fonttools/fonttools/issues/3111
+            merger.mergeThings(
+                self.Value,
+                [v.Value if v.Value is not None else otBase.ValueRecord() for v in lst],
+            )
         self.ValueFormat = self.Value.getFormat()
         return
 
@@ -449,7 +455,6 @@ def _PairPosFormat1_merge(self, lst, merger):
 
 
 def _ClassDef_invert(self, allGlyphs=None):
-
     if isinstance(self, dict):
         classDefs = self
     else:
@@ -505,7 +510,6 @@ def _ClassDef_merge_classify(lst, allGlyphses=None):
 
 
 def _PairPosFormat2_align_matrices(self, lst, font, transparent=False):
-
     matrices = [l.Class1Record for l in lst]
 
     # Align first classes
@@ -909,6 +913,39 @@ def _Lookup_SinglePos_subtables_flatten(lst, font, min_inclusive_rec_format):
     return [new]
 
 
+@AligningMerger.merger(ot.CursivePos)
+def merge(merger, self, lst):
+    # Align them
+    glyphs, padded = _merge_GlyphOrders(
+        merger.font,
+        [l.Coverage.glyphs for l in lst],
+        [l.EntryExitRecord for l in lst],
+    )
+
+    self.Format = 1
+    self.Coverage = ot.Coverage()
+    self.Coverage.glyphs = glyphs
+    self.EntryExitRecord = []
+    for _ in glyphs:
+        rec = ot.EntryExitRecord()
+        rec.EntryAnchor = ot.Anchor()
+        rec.EntryAnchor.Format = 1
+        rec.ExitAnchor = ot.Anchor()
+        rec.ExitAnchor.Format = 1
+        self.EntryExitRecord.append(rec)
+    merger.mergeLists(self.EntryExitRecord, padded)
+    self.EntryExitCount = len(self.EntryExitRecord)
+
+
+@AligningMerger.merger(ot.EntryExitRecord)
+def merge(merger, self, lst):
+    if all(master.EntryAnchor is None for master in lst):
+        self.EntryAnchor = None
+    if all(master.ExitAnchor is None for master in lst):
+        self.ExitAnchor = None
+    merger.mergeObjects(self, lst)
+
+
 @AligningMerger.merger(ot.Lookup)
 def merge(merger, self, lst):
     subtables = merger.lookup_subtables = [l.SubTable for l in lst]
@@ -1023,7 +1060,7 @@ class InstancerMerger(AligningMerger):
         Merger.__init__(self, font)
         self.model = model
         self.location = location
-        self.scalars = model.getScalars(location)
+        self.masterScalars = model.getMasterScalars(location)
 
 
 @InstancerMerger.merger(ot.CaretValue)
@@ -1031,8 +1068,10 @@ def merge(merger, self, lst):
     assert self.Format == 1
     Coords = [a.Coordinate for a in lst]
     model = merger.model
-    scalars = merger.scalars
-    self.Coordinate = otRound(model.interpolateFromMastersAndScalars(Coords, scalars))
+    masterScalars = merger.masterScalars
+    self.Coordinate = otRound(
+        model.interpolateFromValuesAndScalars(Coords, masterScalars)
+    )
 
 
 @InstancerMerger.merger(ot.Anchor)
@@ -1041,15 +1080,19 @@ def merge(merger, self, lst):
     XCoords = [a.XCoordinate for a in lst]
     YCoords = [a.YCoordinate for a in lst]
     model = merger.model
-    scalars = merger.scalars
-    self.XCoordinate = otRound(model.interpolateFromMastersAndScalars(XCoords, scalars))
-    self.YCoordinate = otRound(model.interpolateFromMastersAndScalars(YCoords, scalars))
+    masterScalars = merger.masterScalars
+    self.XCoordinate = otRound(
+        model.interpolateFromValuesAndScalars(XCoords, masterScalars)
+    )
+    self.YCoordinate = otRound(
+        model.interpolateFromValuesAndScalars(YCoords, masterScalars)
+    )
 
 
 @InstancerMerger.merger(otBase.ValueRecord)
 def merge(merger, self, lst):
     model = merger.model
-    scalars = merger.scalars
+    masterScalars = merger.masterScalars
     # TODO Handle differing valueformats
     for name, tableName in [
         ("XAdvance", "XAdvDevice"),
@@ -1057,12 +1100,13 @@ def merge(merger, self, lst):
         ("XPlacement", "XPlaDevice"),
         ("YPlacement", "YPlaDevice"),
     ]:
-
         assert not hasattr(self, tableName)
 
         if hasattr(self, name):
             values = [getattr(a, name, 0) for a in lst]
-            value = otRound(model.interpolateFromMastersAndScalars(values, scalars))
+            value = otRound(
+                model.interpolateFromValuesAndScalars(values, masterScalars)
+            )
             setattr(self, name, value)
 
 
@@ -1085,7 +1129,6 @@ class MutatorMerger(AligningMerger):
 
 @MutatorMerger.merger(ot.CaretValue)
 def merge(merger, self, lst):
-
     # Hack till we become selfless.
     self.__dict__ = lst[0].__dict__.copy()
 
@@ -1108,7 +1151,6 @@ def merge(merger, self, lst):
 
 @MutatorMerger.merger(ot.Anchor)
 def merge(merger, self, lst):
-
     # Hack till we become selfless.
     self.__dict__ = lst[0].__dict__.copy()
 
@@ -1139,7 +1181,6 @@ def merge(merger, self, lst):
 
 @MutatorMerger.merger(otBase.ValueRecord)
 def merge(merger, self, lst):
-
     # Hack till we become selfless.
     self.__dict__ = lst[0].__dict__.copy()
 
@@ -1150,7 +1191,6 @@ def merge(merger, self, lst):
         ("XPlacement", "XPlaDevice"),
         ("YPlacement", "YPlaDevice"),
     ]:
-
         if not hasattr(self, tableName):
             continue
         dev = getattr(self, tableName)
@@ -1266,7 +1306,6 @@ def merge(merger, self, lst):
         ("XPlacement", "XPlaDevice"),
         ("YPlacement", "YPlaDevice"),
     ]:
-
         if hasattr(self, name):
             value, deviceTable = buildVarDevTable(
                 merger.store_builder, [getattr(a, name, 0) for a in lst]

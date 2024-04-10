@@ -28,6 +28,7 @@ from fontTools.misc import sstruct
 from fontTools.misc.textTools import Tag, bytechr, byteord
 from fontTools import fontBuilder
 from fontTools.pens.ttGlyphPen import TTGlyphPen
+from fontTools.pens.recordingPen import RecordingPen
 from io import BytesIO
 import struct
 import os
@@ -1489,6 +1490,42 @@ class UShort255Test(unittest.TestCase):
             pack255UShort,
             0xFFFF + 1,
         )
+
+
+class VarCompositeTest(unittest.TestCase):
+    def test_var_composite(self):
+        input_path = os.path.join(data_dir, "varc-ac00-ac01.ttf")
+        ttf = ttLib.TTFont(input_path)
+        ttf.flavor = "woff2"
+        out = BytesIO()
+        ttf.save(out)
+
+        ttf = ttLib.TTFont(out)
+        ttf.flavor = None
+        out = BytesIO()
+        ttf.save(out)
+
+
+class CubicTest(unittest.TestCase):
+    def test_cubic(self):
+        input_path = os.path.join(
+            data_dir, "..", "tables", "data", "NotoSans-VF-cubic.subset.ttf"
+        )
+        ttf = ttLib.TTFont(input_path)
+        pen1 = RecordingPen()
+        ttf.getGlyphSet()["a"].draw(pen1)
+        ttf.flavor = "woff2"
+        out = BytesIO()
+        ttf.save(out)
+
+        ttf = ttLib.TTFont(out)
+        ttf.flavor = None
+        pen2 = RecordingPen()
+        ttf.getGlyphSet()["a"].draw(pen2)
+        out = BytesIO()
+        ttf.save(out)
+
+        assert pen1.value == pen2.value
 
 
 if __name__ == "__main__":

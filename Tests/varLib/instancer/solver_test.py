@@ -1,4 +1,5 @@
 from fontTools.varLib.instancer import solver
+from fontTools.varLib.instancer import NormalizedAxisTripleAndDistances
 import pytest
 
 
@@ -42,7 +43,8 @@ class RebaseTentTest(object):
                 (0, 0.2, 1),
                 (-1, 0, 0.8),
                 [
-                    (1, (0, 0.25, 1.25)),
+                    (1, (0, 0.25, 1)),
+                    (0.25, (0.25, 1, 1)),
                 ],
             ),
             # Case 3 boundary
@@ -50,7 +52,8 @@ class RebaseTentTest(object):
                 (0, 0.4, 1),
                 (-1, 0, 0.5),
                 [
-                    (1, (0, 0.8, 1.99994)),
+                    (1, (0, 0.8, 1)),
+                    (2.5 / 3, (0.8, 1, 1)),
                 ],
             ),
             # Case 4
@@ -91,6 +94,25 @@ class RebaseTentTest(object):
                     (-1, (-1, -1, 0)),
                 ],
             ),
+            pytest.param(
+                (0.0, 0.5, 1),
+                (0, 0.5, 0.75),
+                [
+                    (1, None),
+                    (-0.5, (0, 1, 1)),
+                    (-1, (-1, -1, 0)),
+                ],
+            ),
+            pytest.param(
+                (0.0, 0.5, 1),
+                (0, 0.25, 0.8),
+                [
+                    (0.5, None),
+                    (0.5, (0, 0.45454545, 0.9090909090)),
+                    (-0.1, (0.9090909090, 1.0, 1.0)),
+                    (-0.5, (-1, -1, 0)),
+                ],
+            ),
             # Case 3a/1neg
             pytest.param(
                 (0.0, 0.5, 2),
@@ -117,8 +139,7 @@ class RebaseTentTest(object):
                 (0.25, 0.25, 0.75),
                 [
                     (0.5, None),
-                    (0.5, (0, 0.5, 1.5)),
-                    (-0.5, (0.5, 1.5, 1.5)),
+                    (0.5, (0, 0.5, 1.0)),
                 ],
             ),
             # Case 1neg
@@ -215,7 +236,20 @@ class RebaseTentTest(object):
                 (0, 0.2, 1),
                 (0, 0, 0.5),
                 [
-                    (1, (0, 0.4, 1.99994)),
+                    (1, (0, 0.4, 1)),
+                    (0.625, (0.4, 1, 1)),
+                ],
+            ),
+            # https://github.com/fonttools/fonttools/issues/3139
+            pytest.param(
+                (0, 0.5, 1),
+                (-1, 0.25, 1),
+                [
+                    (0.5, None),
+                    (0.5, (0.0, 1 / 3, 2 / 3)),
+                    (-0.5, (2 / 3, 1, 1)),
+                    (-0.5, (-1, -0.2, 0)),
+                    (-0.5, (-1, -1, -0.2)),
                 ],
             ),
             # Dirac delta at new default. Fancy!
@@ -230,9 +264,33 @@ class RebaseTentTest(object):
                     (-1, (-1, -1, -0.0001220703)),
                 ],
             ),
+            # https://github.com/fonttools/fonttools/issues/3177
+            pytest.param(
+                (0, 1, 1),
+                (-1, -0.5, +1, 1, 1),
+                [
+                    (1.0, (1 / 3, 1.0, 1.0)),
+                ],
+            ),
+            pytest.param(
+                (0, 1, 1),
+                (-1, -0.5, +1, 2, 1),
+                [
+                    (1.0, (0.5, 1.0, 1.0)),
+                ],
+            ),
+            # https://github.com/fonttools/fonttools/issues/3291
+            pytest.param(
+                (0.6, 0.7, 0.8),
+                (-1, 0.2, +1, 1, 1),
+                [
+                    (1.0, (0.5, 0.625, 0.75)),
+                ],
+            ),
         ],
     )
     def test_rebaseTent(self, tent, axisRange, expected):
+        axisRange = NormalizedAxisTripleAndDistances(*axisRange)
 
         sol = solver.rebaseTent(tent, axisRange)
 

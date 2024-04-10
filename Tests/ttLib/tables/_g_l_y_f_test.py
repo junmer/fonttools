@@ -1,5 +1,6 @@
 from fontTools.misc.fixedTools import otRound
 from fontTools.misc.testTools import getXML, parseXML
+from fontTools.misc.transform import Transform
 from fontTools.pens.ttGlyphPen import TTGlyphPen
 from fontTools.pens.recordingPen import RecordingPen, RecordingPointPen
 from fontTools.pens.pointPen import PointToSegmentPen
@@ -8,6 +9,9 @@ from fontTools.ttLib.tables._g_l_y_f import (
     Glyph,
     GlyphCoordinates,
     GlyphComponent,
+    dropImpliedOnCurvePoints,
+    flagOnCurve,
+    flagCubic,
     ARGS_ARE_XY_VALUES,
     SCALED_COMPONENT_OFFSET,
     UNSCALED_COMPONENT_OFFSET,
@@ -18,7 +22,8 @@ from fontTools.ttLib.tables._g_l_y_f import (
 from fontTools.ttLib.tables import ttProgram
 import sys
 import array
-from io import StringIO
+from copy import deepcopy
+from io import StringIO, BytesIO
 import itertools
 import pytest
 import re
@@ -184,6 +189,7 @@ GLYF_BIN = os.path.join(DATA_DIR, "_g_l_y_f_outline_flag_bit6.glyf.bin")
 HEAD_BIN = os.path.join(DATA_DIR, "_g_l_y_f_outline_flag_bit6.head.bin")
 LOCA_BIN = os.path.join(DATA_DIR, "_g_l_y_f_outline_flag_bit6.loca.bin")
 MAXP_BIN = os.path.join(DATA_DIR, "_g_l_y_f_outline_flag_bit6.maxp.bin")
+INST_TTX = os.path.join(DATA_DIR, "_g_l_y_f_instructions.ttx")
 
 
 def strip_ttLibVersion(string):
@@ -232,6 +238,18 @@ class GlyfTableTest(unittest.TestCase):
         glyfTable = font["glyf"]
         glyfData = glyfTable.compile(font)
         self.assertEqual(glyfData, self.glyfData)
+
+    def test_instructions_roundtrip(self):
+        font = TTFont(sfntVersion="\x00\x01\x00\x00")
+        font.importXML(INST_TTX)
+        glyfTable = font["glyf"]
+        self.glyfData = glyfTable.compile(font)
+        out = StringIO()
+        font.saveXML(out)
+        glyfXML = strip_ttLibVersion(out.getvalue()).splitlines()
+        with open(INST_TTX, "r") as f:
+            origXML = strip_ttLibVersion(f.read()).splitlines()
+        self.assertEqual(glyfXML, origXML)
 
     def test_recursiveComponent(self):
         glyphSet = {}
@@ -376,10 +394,30 @@ class GlyfTableTest(unittest.TestCase):
         font["hmtx"].metrics = {".notdef": (100, 0)}
         font["head"] = newTable("head")
         font["head"].unitsPerEm = 1000
-        self.assertEqual(
-            font["glyf"].getPhantomPoints(".notdef", font, 0),
-            [(0, 0), (100, 0), (0, 0), (0, -1000)],
-        )
+        with pytest.deprecated_call():
+            self.assertEqual(
+                font["glyf"].getPhantomPoints(".notdef", font, 0),
+                [(0, 0), (100, 0), (0, 0), (0, -1000)],
+            )
+
+    def test_getGlyphID(self):
+        # https://github.com/fonttools/fonttools/pull/3301#discussion_r1360405861
+        glyf = newTable("glyf")
+        glyf.setGlyphOrder([".notdef", "a", "b"])
+        glyf.glyphs = {}
+        for glyphName in glyf.glyphOrder:
+            glyf[glyphName] = Glyph()
+
+        assert glyf.getGlyphID("a") == 1
+
+        with pytest.raises(ValueError):
+            glyf.getGlyphID("c")
+
+        glyf["c"] = Glyph()
+        assert glyf.getGlyphID("c") == 3
+
+        del glyf["b"]
+        assert glyf.getGlyphID("c") == 2
 
 
 class GlyphTest:
@@ -524,6 +562,23 @@ class GlyphTest:
         assert glyphSet["percent"].getCompositeMaxpValues(glyphSet)[2] == 2
         assert glyphSet["perthousand"].getCompositeMaxpValues(glyphSet)[2] == 2
 
+    def test_recalcBounds_empty_components(self):
+        glyphSet = {}
+        pen = TTGlyphPen(glyphSet)
+        # empty simple glyph
+        foo = glyphSet["foo"] = pen.glyph()
+        # use the empty 'foo' glyph as a component in 'bar' with some x/y offsets
+        pen.addComponent("foo", (1, 0, 0, 1, -80, 50))
+        bar = glyphSet["bar"] = pen.glyph()
+
+        foo.recalcBounds(glyphSet)
+        bar.recalcBounds(glyphSet)
+
+        # we expect both the empty simple glyph and the composite referencing it
+        # to have empty bounding boxes (0, 0, 0, 0) no matter the component's shift
+        assert (foo.xMin, foo.yMin, foo.xMax, foo.yMax) == (0, 0, 0, 0)
+        assert (bar.xMin, bar.yMin, bar.xMax, bar.yMax) == (0, 0, 0, 0)
+
 
 class GlyphComponentTest:
     def test_toXML_no_transform(self):
@@ -663,6 +718,347 @@ class GlyphComponentTest:
         assert comp.flags == 0
         assert (comp.firstPt, comp.secondPt) == (1, 2)
         assert not hasattr(comp, "transform")
+
+    def test_trim_varComposite_glyph(self):
+        font_path = os.path.join(DATA_DIR, "..", "..", "data", "varc-ac00-ac01.ttf")
+        font = TTFont(font_path)
+        glyf = font["glyf"]
+
+        glyf.glyphs["uniAC00"].trim()
+        glyf.glyphs["uniAC01"].trim()
+
+        font_path = os.path.join(DATA_DIR, "..", "..", "data", "varc-6868.ttf")
+        font = TTFont(font_path)
+        glyf = font["glyf"]
+
+        glyf.glyphs["uni6868"].trim()
+
+    def test_varComposite_basic(self):
+        font_path = os.path.join(DATA_DIR, "..", "..", "data", "varc-ac00-ac01.ttf")
+        font = TTFont(font_path)
+        tables = [
+            table_tag
+            for table_tag in font.keys()
+            if table_tag not in {"head", "maxp", "hhea"}
+        ]
+        xml = StringIO()
+        font.saveXML(xml)
+        xml1 = StringIO()
+        font.saveXML(xml1, tables=tables)
+        xml.seek(0)
+        font = TTFont()
+        font.importXML(xml)
+        ttf = BytesIO()
+        font.save(ttf)
+        ttf.seek(0)
+        font = TTFont(ttf)
+        xml2 = StringIO()
+        font.saveXML(xml2, tables=tables)
+        assert xml1.getvalue() == xml2.getvalue()
+
+        font_path = os.path.join(DATA_DIR, "..", "..", "data", "varc-6868.ttf")
+        font = TTFont(font_path)
+        tables = [
+            table_tag
+            for table_tag in font.keys()
+            if table_tag not in {"head", "maxp", "hhea", "name", "fvar"}
+        ]
+        xml = StringIO()
+        font.saveXML(xml)
+        xml1 = StringIO()
+        font.saveXML(xml1, tables=tables)
+        xml.seek(0)
+        font = TTFont()
+        font.importXML(xml)
+        ttf = BytesIO()
+        font.save(ttf)
+        ttf.seek(0)
+        font = TTFont(ttf)
+        xml2 = StringIO()
+        font.saveXML(xml2, tables=tables)
+        assert xml1.getvalue() == xml2.getvalue()
+
+
+class GlyphCubicTest:
+    def test_roundtrip(self):
+        font_path = os.path.join(DATA_DIR, "NotoSans-VF-cubic.subset.ttf")
+        font = TTFont(font_path)
+        tables = [table_tag for table_tag in font.keys() if table_tag not in {"head"}]
+        xml = StringIO()
+        font.saveXML(xml)
+        xml1 = StringIO()
+        font.saveXML(xml1, tables=tables)
+        xml.seek(0)
+        font = TTFont()
+        font.importXML(xml)
+        ttf = BytesIO()
+        font.save(ttf)
+        ttf.seek(0)
+        font = TTFont(ttf)
+        xml2 = StringIO()
+        font.saveXML(xml2, tables=tables)
+        assert xml1.getvalue() == xml2.getvalue()
+
+    def test_no_oncurves(self):
+        glyph = Glyph()
+        glyph.numberOfContours = 1
+        glyph.coordinates = GlyphCoordinates(
+            [(0, 0), (1, 0), (1, 0), (1, 1), (1, 1), (0, 1), (0, 1), (0, 0)]
+        )
+        glyph.flags = array.array("B", [flagCubic] * 8)
+        glyph.endPtsOfContours = [7]
+        glyph.program = ttProgram.Program()
+
+        for i in range(2):
+            if i == 1:
+                glyph.compile(None)
+
+            pen = RecordingPen()
+            glyph.draw(pen, None)
+
+            assert pen.value == [
+                ("moveTo", ((0, 0),)),
+                ("curveTo", ((0, 0), (1, 0), (1, 0))),
+                ("curveTo", ((1, 0), (1, 1), (1, 1))),
+                ("curveTo", ((1, 1), (0, 1), (0, 1))),
+                ("curveTo", ((0, 1), (0, 0), (0, 0))),
+                ("closePath", ()),
+            ]
+
+    def test_spline(self):
+        glyph = Glyph()
+        glyph.numberOfContours = 1
+        glyph.coordinates = GlyphCoordinates(
+            [(0, 0), (1, 0), (1, 0), (1, 1), (1, 1), (0, 1), (0, 1)]
+        )
+        glyph.flags = array.array("B", [flagOnCurve] + [flagCubic] * 6)
+        glyph.endPtsOfContours = [6]
+        glyph.program = ttProgram.Program()
+
+        for i in range(2):
+            if i == 1:
+                glyph.compile(None)
+
+            pen = RecordingPen()
+            glyph.draw(pen, None)
+
+            assert pen.value == [
+                ("moveTo", ((0, 0),)),
+                ("curveTo", ((1, 0), (1, 0), (1.0, 0.5))),
+                ("curveTo", ((1, 1), (1, 1), (0.5, 1.0))),
+                ("curveTo", ((0, 1), (0, 1), (0, 0))),
+                ("closePath", ()),
+            ]
+
+
+def build_interpolatable_glyphs(contours, *transforms):
+    # given a list of lists of (point, flag) tuples (one per contour), build a Glyph
+    # then make len(transforms) copies transformed accordingly, and return a
+    # list of such interpolatable glyphs.
+    glyph1 = Glyph()
+    glyph1.numberOfContours = len(contours)
+    glyph1.coordinates = GlyphCoordinates(
+        [pt for contour in contours for pt, _flag in contour]
+    )
+    glyph1.flags = array.array(
+        "B", [flag for contour in contours for _pt, flag in contour]
+    )
+    glyph1.endPtsOfContours = [
+        sum(len(contour) for contour in contours[: i + 1]) - 1
+        for i in range(len(contours))
+    ]
+    result = [glyph1]
+    for t in transforms:
+        glyph = deepcopy(glyph1)
+        glyph.coordinates.transform((t[0:2], t[2:4]))
+        glyph.coordinates.translate(t[4:6])
+        result.append(glyph)
+    return result
+
+
+def test_dropImpliedOnCurvePoints_all_quad_off_curves():
+    # Two interpolatable glyphs with same structure, the coordinates of one are 2x the
+    # other; all the on-curve points are impliable in each one, thus are dropped from
+    # both, leaving contours with off-curve points only.
+    glyph1, glyph2 = build_interpolatable_glyphs(
+        [
+            [
+                ((0, 1), flagOnCurve),
+                ((1, 1), 0),
+                ((1, 0), flagOnCurve),
+                ((1, -1), 0),
+                ((0, -1), flagOnCurve),
+                ((-1, -1), 0),
+                ((-1, 0), flagOnCurve),
+                ((-1, 1), 0),
+            ],
+            [
+                ((0, 2), flagOnCurve),
+                ((2, 2), 0),
+                ((2, 0), flagOnCurve),
+                ((2, -2), 0),
+                ((0, -2), flagOnCurve),
+                ((-2, -2), 0),
+                ((-2, 0), flagOnCurve),
+                ((-2, 2), 0),
+            ],
+        ],
+        Transform().scale(2.0),
+    )
+    # also add an empty glyph (will be ignored); we use this trick for 'sparse' masters
+    glyph3 = Glyph()
+    glyph3.numberOfContours = 0
+
+    assert dropImpliedOnCurvePoints(glyph1, glyph2, glyph3) == {
+        0,
+        2,
+        4,
+        6,
+        8,
+        10,
+        12,
+        14,
+    }
+
+    assert glyph1.flags == glyph2.flags == array.array("B", [0, 0, 0, 0, 0, 0, 0, 0])
+    assert glyph1.coordinates == GlyphCoordinates(
+        [(1, 1), (1, -1), (-1, -1), (-1, 1), (2, 2), (2, -2), (-2, -2), (-2, 2)]
+    )
+    assert glyph2.coordinates == GlyphCoordinates(
+        [(2, 2), (2, -2), (-2, -2), (-2, 2), (4, 4), (4, -4), (-4, -4), (-4, 4)]
+    )
+    assert glyph1.endPtsOfContours == glyph2.endPtsOfContours == [3, 7]
+    assert glyph3.numberOfContours == 0
+
+
+def test_dropImpliedOnCurvePoints_all_cubic_off_curves():
+    # same as above this time using cubic curves
+    glyph1, glyph2 = build_interpolatable_glyphs(
+        [
+            [
+                ((0, 1), flagOnCurve),
+                ((1, 1), flagCubic),
+                ((1, 1), flagCubic),
+                ((1, 0), flagOnCurve),
+                ((1, -1), flagCubic),
+                ((1, -1), flagCubic),
+                ((0, -1), flagOnCurve),
+                ((-1, -1), flagCubic),
+                ((-1, -1), flagCubic),
+                ((-1, 0), flagOnCurve),
+                ((-1, 1), flagCubic),
+                ((-1, 1), flagCubic),
+            ]
+        ],
+        Transform().translate(10.0),
+    )
+    glyph3 = Glyph()
+    glyph3.numberOfContours = 0
+
+    assert dropImpliedOnCurvePoints(glyph1, glyph2, glyph3) == {0, 3, 6, 9}
+
+    assert glyph1.flags == glyph2.flags == array.array("B", [flagCubic] * 8)
+    assert glyph1.coordinates == GlyphCoordinates(
+        [(1, 1), (1, 1), (1, -1), (1, -1), (-1, -1), (-1, -1), (-1, 1), (-1, 1)]
+    )
+    assert glyph2.coordinates == GlyphCoordinates(
+        [(11, 1), (11, 1), (11, -1), (11, -1), (9, -1), (9, -1), (9, 1), (9, 1)]
+    )
+    assert glyph1.endPtsOfContours == glyph2.endPtsOfContours == [7]
+    assert glyph3.numberOfContours == 0
+
+
+def test_dropImpliedOnCurvePoints_not_all_impliable():
+    # same input as in in test_dropImpliedOnCurvePoints_all_quad_off_curves but we
+    # perturbate one of the glyphs such that the 2nd on-curve is no longer half-way
+    # between the neighboring off-curves.
+    glyph1, glyph2, glyph3 = build_interpolatable_glyphs(
+        [
+            [
+                ((0, 1), flagOnCurve),
+                ((1, 1), 0),
+                ((1, 0), flagOnCurve),
+                ((1, -1), 0),
+                ((0, -1), flagOnCurve),
+                ((-1, -1), 0),
+                ((-1, 0), flagOnCurve),
+                ((-1, 1), 0),
+            ]
+        ],
+        Transform().translate(10.0),
+        Transform().translate(10.0).scale(2.0),
+    )
+    p2 = glyph2.coordinates[2]
+    glyph2.coordinates[2] = (p2[0] + 2.0, p2[1] - 2.0)
+
+    assert dropImpliedOnCurvePoints(glyph1, glyph2, glyph3) == {
+        0,
+        # 2,  this is NOT implied because it's no longer impliable for all glyphs
+        4,
+        6,
+    }
+
+    assert glyph2.flags == array.array("B", [0, flagOnCurve, 0, 0, 0])
+
+
+def test_dropImpliedOnCurvePoints_all_empty_glyphs():
+    glyph1 = Glyph()
+    glyph1.numberOfContours = 0
+    glyph2 = Glyph()
+    glyph2.numberOfContours = 0
+
+    assert dropImpliedOnCurvePoints(glyph1, glyph2) == set()
+
+
+def test_dropImpliedOnCurvePoints_incompatible_number_of_contours():
+    glyph1 = Glyph()
+    glyph1.numberOfContours = 1
+    glyph1.endPtsOfContours = [3]
+    glyph1.flags = array.array("B", [1, 1, 1, 1])
+    glyph1.coordinates = GlyphCoordinates([(0, 0), (1, 1), (2, 2), (3, 3)])
+
+    glyph2 = Glyph()
+    glyph2.numberOfContours = 2
+    glyph2.endPtsOfContours = [1, 3]
+    glyph2.flags = array.array("B", [1, 1, 1, 1])
+    glyph2.coordinates = GlyphCoordinates([(0, 0), (1, 1), (2, 2), (3, 3)])
+
+    with pytest.raises(ValueError, match="Incompatible numberOfContours"):
+        dropImpliedOnCurvePoints(glyph1, glyph2)
+
+
+def test_dropImpliedOnCurvePoints_incompatible_flags():
+    glyph1 = Glyph()
+    glyph1.numberOfContours = 1
+    glyph1.endPtsOfContours = [3]
+    glyph1.flags = array.array("B", [1, 1, 1, 1])
+    glyph1.coordinates = GlyphCoordinates([(0, 0), (1, 1), (2, 2), (3, 3)])
+
+    glyph2 = Glyph()
+    glyph2.numberOfContours = 1
+    glyph2.endPtsOfContours = [3]
+    glyph2.flags = array.array("B", [0, 0, 0, 0])
+    glyph2.coordinates = GlyphCoordinates([(0, 0), (1, 1), (2, 2), (3, 3)])
+
+    with pytest.raises(ValueError, match="Incompatible flags"):
+        dropImpliedOnCurvePoints(glyph1, glyph2)
+
+
+def test_dropImpliedOnCurvePoints_incompatible_endPtsOfContours():
+    glyph1 = Glyph()
+    glyph1.numberOfContours = 2
+    glyph1.endPtsOfContours = [2, 6]
+    glyph1.flags = array.array("B", [1, 1, 1, 1, 1, 1, 1])
+    glyph1.coordinates = GlyphCoordinates([(i, i) for i in range(7)])
+
+    glyph2 = Glyph()
+    glyph2.numberOfContours = 2
+    glyph2.endPtsOfContours = [3, 6]
+    glyph2.flags = array.array("B", [1, 1, 1, 1, 1, 1, 1])
+    glyph2.coordinates = GlyphCoordinates([(i, i) for i in range(7)])
+
+    with pytest.raises(ValueError, match="Incompatible endPtsOfContours"):
+        dropImpliedOnCurvePoints(glyph1, glyph2)
 
 
 if __name__ == "__main__":

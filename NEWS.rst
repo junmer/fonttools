@@ -1,11 +1,373 @@
+4.51.0 (released 2024-04-05)
+----------------------------
+
+- [ttLib] Optimization on loading aux fields (#3464).
+- [ttFont] Add reorderGlyphs (#3468).
+
+4.50.0 (released 2024-03-15)
+----------------------------
+
+- [pens] Added decomposing filter pens that draw components as regular contours (#3460).
+- [instancer] Drop explicit no-op axes from TupleVariations (#3457).
+- [cu2qu/ufo] Return set of modified glyph names from fonts_to_quadratic (#3456).
+
+4.49.0 (released 2024-02-15)
+----------------------------
+
+- [otlLib] Add API for building ``MATH`` table (#3446)
+
+4.48.1 (released 2024-02-06)
+----------------------------
+
+- Fixed uploading wheels to PyPI, no code changes since v4.48.0.
+
+4.48.0 (released 2024-02-06)
+----------------------------
+
+- [varLib] Do not log when there are no OTL tables to be merged.
+- [setup.py] Do not restrict lxml<5 any more, tests pass just fine with lxml>=5.
+- [feaLib] Remove glyph and class names length restrictions in FEA (#3424).
+- [roundingPens] Added ``transformRoundFunc`` parameter to the rounding pens to allow
+  for custom rounding of the components' transforms (#3426).
+- [feaLib] Keep declaration order of ligature components within a ligature set, instead
+  of sorting by glyph name (#3429).
+- [feaLib] Fixed ordering of alternates in ``aalt`` lookups, following the declaration
+  order of feature references within the ``aalt`` feature block (#3430).
+- [varLib.instancer] Fixed a bug in the instancer's IUP optimization (#3432).
+- [sbix] Support sbix glyphs with new graphicType "flip" (#3433).
+- [svgPathPen] Added ``--glyphs`` option to dump the SVG paths for the named glyphs
+  in the font (0572f78).
+- [designspaceLib] Added "description" attribute to ``<mappings>`` and ``<mapping>``
+  elements, and allow multiple ``<mappings>`` elements to group ``<mapping>`` elements
+  that are logically related (#3435, #3437).
+- [otlLib] Correctly choose the most compact GSUB contextual lookup format (#3439).
+
+4.47.2 (released 2024-01-11)
+----------------------------
+
+Minor release to fix uploading wheels to PyPI.
+
+4.47.1 (released 2024-01-11)
+----------------------------
+
+- [merge] Improve help message and add standard command line options (#3408)
+- [otlLib] Pass ``ttFont`` to ``name.addName`` in ``buildStatTable`` (#3406)
+- [featureVars] Re-use ``FeatureVariationRecord``'s when possible (#3413)
+
+4.47.0 (released 2023-12-18)
+----------------------------
+
+- [varLib.models] New API for VariationModel: ``getMasterScalars`` and
+  ``interpolateFromValuesAndScalars``.
+- [varLib.interpolatable] Various bugfixes and rendering improvements. In particular,
+  add a Summary page in the front, and an Index and Table-of-Contents in the back.
+  Change the page size to Letter.
+- [Docs/designspaceLib] Defined a new ``public.fontInfo`` lib key, not used anywhere yet (#3358).
+
+4.46.0 (released 2023-12-02)
+----------------------------
+
+- [featureVars] Allow to register the same set of substitution rules to multiple features.
+  The ``addFeatureVariations`` function can now take a list of featureTags; similarly, the
+  lib key 'com.github.fonttools.varLib.featureVarsFeatureTag' can now take a
+  comma-separateed string of feature tags (e.g. "salt,ss01") instead of a single tag (#3360).
+- [featureVars] Don't overwrite GSUB FeatureVariations, but append new records to it
+  for features which are not already there. But raise ``VarLibError`` if the feature tag
+  already has feature variations associated with it (#3363).
+- [varLib] Added ``addGSUBFeatureVariations`` function to add GSUB Feature Variations
+  to an existing variable font from rules defined in a DesignSpace document (#3362).
+- [varLib.interpolatable] Various bugfixes and rendering improvements. In particular,
+  a new test for "underweight" glyphs. The new test reports quite a few false-positives
+  though. Please send feedback.
+
+4.45.1 (released 2023-11-23)
+----------------------------
+
+- [varLib.interpolatable] Various bugfixes and improvements, better reporting, reduced
+  false positives.
+- [ttGlyphSet] Added option to not recalculate glyf bounds (#3348).
+
+4.45.0 (released 2023-11-20)
+----------------------------
+
+- [varLib.interpolatable] Vastly improved algorithms. Also available now is ``--pdf``
+  and ``--html`` options to generate a PDF or HTML report of the interpolation issues.
+  The PDF/HTML report showcases the problematic masters, the interpolated broken
+  glyph, as well as the proposed fixed version.
+
+4.44.3 (released 2023-11-15)
+----------------------------
+
+- [subset] Only prune codepage ranges for OS/2.version >= 1, ignore otherwise (#3334).
+- [instancer] Ensure hhea vertical metrics stay in sync with OS/2 ones after instancing
+  MVAR table containing 'hasc', 'hdsc' or 'hlgp' tags (#3297).
+
+4.44.2 (released 2023-11-14)
+----------------------------
+
+- [glyf] Have ``Glyph.recalcBounds`` skip empty components (base glyph with no contours)
+  when computing the bounding box of composite glyphs. This simply restores the existing
+  behavior before some changes were introduced in fonttools 4.44.0 (#3333).
+
+4.44.1 (released 2023-11-14)
+----------------------------
+
+- [feaLib] Ensure variable mark anchors are deep-copied while building since they
+  get modified in-place and later reused (#3330).
+- [OS/2|subset] Added method to ``recalcCodePageRanges`` to OS/2 table class; added
+  ``--prune-codepage-ranges`` to `fonttools subset` command (#3328, #2607).
+
+4.44.0 (released 2023-11-03)
+----------------------------
+
+- [instancer] Recalc OS/2 AvgCharWidth after instancing if default changes (#3317).
+- [otlLib] Make ClassDefBuilder class order match varLib.merger's, i.e. large
+  classes first, then glyph lexicographic order (#3321, #3324).
+- [instancer] Allow not specifying any of min:default:max values and let be filled
+  up with fvar's values (#3322, #3323).
+- [instancer] When running --update-name-table ignore axes that have no STAT axis
+  values (#3318, #3319).
+- [Debg] When dumping to ttx, write the embedded JSON as multi-line string with
+  indentation (92cbfee0d).
+- [varStore] Handle > 65535 items per encoding by splitting VarData subtable (#3310).
+- [subset] Handle null-offsets in MarkLigPos subtables.
+- [subset] Keep East Asian spacing fatures vhal, halt, chws, vchw by default (#3305).
+- [instancer.solver] Fixed case where axisDef < lower and upper < axisMax (#3304).
+- [glyf] Speed up compilation, mostly around ``recalcBounds`` (#3301).
+- [varLib.interpolatable] Speed it up when working on variable fonts, plus various
+  micro-optimizations (#3300).
+- Require unicodedata2 >= 15.1.0 when installed with 'unicode' extra, contains UCD 15.1.
+
+4.43.1 (released 2023-10-06)
+----------------------------
+
+- [EBDT] Fixed TypeError exception in `_reverseBytes` method triggered when dumping
+  some bitmap fonts with `ttx -z bitwise` option (#3162).
+- [v/hhea] Fixed UnboundLocalError exception in ``recalc`` method when no vmtx or hmtx
+  tables are present (#3290).
+- [bezierTools] Fixed incorrectly typed cython local variable leading to TypeError when
+  calling ``calcQuadraticArcLength`` (#3288).
+- [feaLib/otlLib] Better error message when building Coverage table with missing glyph (#3286).
+
+4.43.0 (released 2023-09-29)
+----------------------------
+
+- [subset] Set up lxml ``XMLParser(resolve_entities=False)`` when parsing OT-SVG documents
+  to prevent XML External Entity (XXE) attacks (9f61271dc):
+  https://codeql.github.com/codeql-query-help/python/py-xxe/
+- [varLib.iup] Added workaround for a Cython bug in ``iup_delta_optimize`` that was
+  leading to IUP tolerance being incorrectly initialised, resulting in sub-optimal deltas
+  (60126435d, cython/cython#5732).
+- [varLib] Added new command-line entry point ``fonttools varLib.avar`` to add an
+  ``avar`` table to an existing VF from axes mappings in a .designspace file (0a3360e52).
+- [instancer] Fixed bug whereby no longer used variation regions were not correctly pruned
+  after VarData optimization (#3268).
+- Added support for Python 3.12 (#3283).
+
+4.42.1 (released 2023-08-20)
+----------------------------
+
+- [t1Lib] Fixed several Type 1 issues (#3238, #3240).
+- [otBase/packer] Allow sharing tables reached by different offset sizes (#3241, #3236).
+- [varLib/merger] Fix Cursive attachment merging error when all anchors are NULL (#3248, #3247).
+- [ttLib] Fixed warning when calling ``addMultilingualName`` and ``ttFont`` parameter was not
+  passed on to ``findMultilingualName`` (#3253).
+
+4.42.0 (released 2023-08-02)
+----------------------------
+
+- [varLib] Use sentinel value 0xFFFF to mark a glyph advance in hmtx/vmtx as non
+  participating, allowing sparse masters to contain glyphs for variation purposes other
+  than {H,V}VAR (#3235).
+- [varLib/cff] Treat empty glyphs in non-default masters as missing, thus not participating
+  in CFF2 delta computation, similarly to how varLib already treats them for gvar (#3234).
+- Added varLib.avarPlanner script to deduce 'correct' avar v1 axis mappings based on
+  glyph average weights (#3223).
+
+4.41.1 (released 2023-07-21)
+----------------------------
+
+- [subset] Fixed perf regression in v4.41.0 by making ``NameRecordVisitor`` only visit
+  tables that do contain nameID references (#3213, #3214).
+- [varLib.instancer] Support instancing fonts containing null ConditionSet offsets in
+  FeatureVariationRecords (#3211, #3212).
+- [statisticsPen] Report font glyph-average weight/width and font-wide slant.
+- [fontBuilder] Fixed head.created date incorrectly set to 0 instead of the current
+  timestamp, regression introduced in v4.40.0 (#3210).
+- [varLib.merger] Support sparse ``CursivePos`` masters (#3209).
+
+4.41.0 (released 2023-07-12)
+----------------------------
+
+- [fontBuilder] Fixed bug in setupOS2 with default panose attribute incorrectly being
+  set to a dict instead of a Panose object (#3201).
+- [name] Added method to ``removeUnusedNameRecords`` in the user range (#3185).
+- [varLib.instancer] Fixed issue with L4 instancing (moving default) (#3179).
+- [cffLib] Use latin1 so we can roundtrip non-ASCII in {Full,Font,Family}Name (#3202).
+- [designspaceLib] Mark <source name="..."> as optional in docs (as it is in the code).
+- [glyf-1] Fixed drawPoints() bug whereby last cubic segment becomes quadratic (#3189, #3190).
+- [fontBuilder] Propagate the 'hidden' flag to the fvar Axis instance (#3184).
+- [fontBuilder] Update setupAvar() to also support avar 2, fixing ``_add_avar()`` call
+  site (#3183).
+- Added new ``voltLib.voltToFea`` submodule (originally Tiro Typeworks' "Volto") for
+  converting VOLT OpenType Layout sources to FEA format (#3164).
+
+4.40.0 (released 2023-06-12)
+----------------------------
+
+- Published native binary wheels to PyPI for all the python minor versions and platform
+  and architectures currently supported that would benefit from this. They will include
+  precompiled Cython-accelerated modules (e.g. cu2qu) without requiring to compile them
+  from source. The pure-python wheel and source distribution will continue to be
+  published as always (pip will automatically chose them when no binary wheel is
+  available for the given platform, e.g. pypy). Use ``pip install --no-binary=fonttools fonttools``
+  to expliclity request pip to install from the pure-python source.
+- [designspaceLib|varLib] Add initial support for specifying axis mappings and build
+  ``avar2`` table from those (#3123).
+- [feaLib] Support variable ligature caret position (#3130).
+- [varLib|glyf] Added option to --drop-implied-oncurves; test for impliable oncurve
+  points either before or after rounding (#3146, #3147, #3155, #3156).
+- [TTGlyphPointPen] Don't error with empty contours, simply ignore them (#3145).
+- [sfnt] Fixed str vs bytes remnant of py3 transition in code dealing with de/compiling
+  WOFF metadata (#3129).
+- [instancer-solver] Fixed bug when moving default instance with sparse masters (#3139, #3140).
+- [feaLib] Simplify variable scalars that don’t vary (#3132).
+- [pens] Added filter pen that explicitly emits closing line when lastPt != movePt (#3100).
+- [varStore] Improve optimize algorithm and better document the algorithm (#3124, #3127).
+  Added ``quantization`` option (#3126).
+- Added CI workflow config file for building native binary wheels (#3121).
+- [fontBuilder] Added glyphDataFormat=0 option; raise error when glyphs contain cubic
+  outlines but glyphDataFormat was not explicitly set to 1 (#3113, #3119).
+- [subset] Prune emptied GDEF.MarkGlyphSetsDef and remap indices; ensure GDEF is
+  subsetted before GSUB and GPOS (#3114, #3118).
+- [xmlReader] Fixed issue whereby DSIG table data was incorrectly parsed (#3115, #2614).
+- [varLib/merger] Fixed merging of SinglePos with pos=0 (#3111, #3112).
+- [feaLib] Demote "Feature has not been defined" error to a warning when building aalt
+  and referenced feature is empty (#3110).
+- [feaLib] Dedupe multiple substitutions with classes (#3105).
+
+4.39.4 (released 2023-05-10)
+----------------------------
+
+- [varLib.interpolatable] Allow for sparse masters (#3075)
+- [merge] Handle differing default/nominalWidthX in CFF (#3070)
+- [ttLib] Add missing main.py file to ttLib package (#3088)
+- [ttx] Fix missing composite instructions in XML (#3092)
+- [ttx] Fix split tables option to work on filenames containing '%' (#3096)
+- [featureVars] Process lookups for features other than rvrn last (#3099)
+- [feaLib] support multiple substitution with classes (#3103)
+
+4.39.3 (released 2023-03-28)
+----------------------------
+
+- [sbix] Fixed TypeError when compiling empty glyphs whose imageData is None, regression
+  was introduced in v4.39 (#3059).
+- [ttFont] Fixed AttributeError on python <= 3.10 when opening a TTFont from a tempfile
+  SpooledTemporaryFile, seekable method only added on python 3.11 (#3052).
+
+4.39.2 (released 2023-03-16)
+----------------------------
+
+- [varLib] Fixed regression introduced in 4.39.1 whereby an incomplete 'STAT' table
+  would be built even though a DesignSpace v5 did contain 'STAT' definitions (#3045, #3046).
+
+4.39.1 (released 2023-03-16)
+----------------------------
+
+- [avar2] Added experimental support for reading/writing avar version 2 as specified in
+  this draft proposal: https://github.com/harfbuzz/boring-expansion-spec/blob/main/avar2.md
+- [glifLib] Wrap underlying XML library exceptions with GlifLibError when parsing GLIFs,
+  and also print the name and path of the glyph that fails to be parsed (#3042).
+- [feaLib] Consult avar for normalizing user-space values in ConditionSets and in
+  VariableScalars (#3042, #3043).
+- [ttProgram] Handle string input to Program.fromAssembly() (#3038).
+- [otlLib] Added a config option to emit GPOS 7 lookups, currently disabled by default
+  because of a macOS bug (#3034).
+- [COLRv1] Added method to automatically compute ClipBoxes (#3027).
+- [ttFont] Fixed getGlyphID to raise KeyError on missing glyphs instead of returning
+  None. The regression was introduced in v4.27.0 (#3032).
+- [sbix] Fixed UnboundLocalError: cannot access local variable 'rawdata' (#3031).
+- [varLib] When building VF, do not overwrite a pre-existing ``STAT`` table that was built
+  with feaLib from FEA feature file. Also, added support for building multiple VFs
+  defined in Designspace v5 from ``fonttools varLib`` script (#3024).
+- [mtiLib] Only add ``Debg`` table with lookup names when ``FONTTOOLS_LOOKUP_DEBUGGING``
+  env variable is set (#3023).
+
+4.39.0 (released 2023-03-06)
+----------------------------
+
+- [mtiLib] Optionally add `Debg` debug info for MTI feature builds (#3018).
+- [ttx] Support reading input file from standard input using special `-` character,
+  similar to existing `-o -` option to write output to standard output (#3020).
+- [cython] Prevent ``cython.compiled`` raise AttributeError if cython not installed
+  properly (#3017).
+- [OS/2] Guard against ZeroDivisionError when calculating xAvgCharWidth in the unlikely
+  scenario no glyph has non-zero advance (#3015).
+- [subset] Recompute xAvgCharWidth independently of --no-prune-unicode-ranges,
+  previously the two options were involuntarily bundled together (#3012).
+- [fontBuilder] Add ``debug`` parameter to addOpenTypeFeatures method to add source
+  debugging information to the font in the ``Debg`` private table (#3008).
+- [name] Make NameRecord `__lt__` comparison not fail on Unicode encoding errors (#3006).
+- [featureVars] Fixed bug in ``overlayBox`` (#3003, #3005).
+- [glyf] Added experimental support for cubic bezier curves in TrueType glyf table, as
+  outlined in glyf v1 proposal (#2988):
+  https://github.com/harfbuzz/boring-expansion-spec/blob/main/glyf1-cubicOutlines.md
+- Added new qu2cu module and related qu2cuPen, the reverse of cu2qu for converting
+  TrueType quadratic splines to cubic bezier curves (#2993).
+- [glyf] Added experimental support for reading and writing Variable Composites/Components
+  as defined in glyf v1 spec proposal (#2958):
+  https://github.com/harfbuzz/boring-expansion-spec/blob/main/glyf1-varComposites.md.
+- [pens]: Added `addVarComponent` method to pen protocols' base classes, which pens can implement
+  to handle varcomponents (by default they get decomposed) (#2958).
+- [misc.transform] Added DecomposedTransform class which implements an affine transformation
+  with separate translate, rotation, scale, skew, and transformation-center components (#2598)
+- [sbix] Ensure Glyph.referenceGlyphName is set; fixes error after dumping and
+  re-compiling sbix table with 'dupe' glyphs (#2984).
+- [feaLib] Be cleverer when merging chained single substitutions into same lookup
+  when they are specified using the inline notation (#2150, #2974).
+- [instancer] Clamp user-inputted axis ranges to those of fvar (#2959).
+- [otBase/subset] Define ``__getstate__`` for BaseTable so that a copied/pickled 'lazy'
+  object gets its own OTTableReader to read from; incidentally fixes a bug while
+  subsetting COLRv1 table containing ClipBoxes on python 3.11 (#2965, #2968).
+- [sbix] Handle glyphs with "dupe" graphic type on compile correctly (#2963).
+- [glyf] ``endPointsOfContours`` field should be unsigned! Kudos to behdad for
+  spotting one of the oldest bugs in FT. Probably nobody has ever dared to make
+  glyphs with more than 32767 points... (#2957).
+- [feaLib] Fixed handling of ``ignore`` statements with unmarked glyphs to match
+  makeotf behavior, which assumes the first glyph is marked (#2950).
+- Reformatted code with ``black`` and enforce new code style via CI check (#2925).
+- [feaLib] Sort name table entries following OT spec prescribed order in the builder (#2927).
+- [cu2quPen] Add Cu2QuMultiPen that converts multiple outlines at a time in
+  interpolation compatible way; its methods take a list of tuples arguments
+  that would normally be passed to individual segment pens, and at the end it
+  dispatches the converted outlines to each pen (#2912).
+- [reverseContourPen/ttGlyphPen] Add outputImpliedClosingLine option (#2913, #2914,
+  #2921, #2922, #2995).
+- [gvar] Avoid expanding all glyphs unnecessarily upon compile (#2918).
+- [scaleUpem] Fixed bug whereby CFF2 vsindex was scaled; it should not (#2893, #2894).
+- [designspaceLib] Add DS.getAxisByTag and refactor getAxis (#2891).
+- [unicodedata] map Zmth<->math in ot_tag_{to,from}_script (#1737, #2889).
+- [woff2] Support encoding/decoding OVERLAP_SIMPLE glyf flags (#2576, #2884).
+- [instancer] Update OS/2 class and post.italicAngle when default moved (L4)
+- Dropped support for Python 3.7 which reached EOL, fontTools requires 3.8+.
+- [instancer] Fixed instantiateFeatureVariations logic when a rule range becomes
+  default-applicable (#2737, #2880).
+- [ttLib] Add main to ttFont and ttCollection that just decompile and re-compile the
+  input font (#2869).
+- [featureVars] Insert 'rvrn' lookup at the beginning of LookupList, to work around bug
+  in Apple implementation of 'rvrn' feature which the spec says it should be processed
+  early whereas on macOS 10.15 it follows lookup order (#2140, #2867).
+- [instancer/mutator] Remove 'DSIG' table if present.
+- [svgPathPen] Don't close path in endPath(), assume open unless closePath() (#2089, #2865).
+
 4.38.0 (released 2022-10-21)
 ----------------------------
 
 - [varLib.instancer] Added support for L4 instancing, i.e. moving the default value of
-  an axis while keeping it variable. Thanks Behdad! (#2728, #2861).  
+  an axis while keeping it variable. Thanks Behdad! (#2728, #2861).
   It's now also possible to restrict an axis min/max values beyond the current default
   value, e.g. a font wght has min=100, def=400, max=900 and you want a partial VF that
-  only varies between 500 and 700, you can now do that.  
+  only varies between 500 and 700, you can now do that.
   You can either specify two min/max values (wght=500:700), and the new default will be
   set to either the minimum or maximum, depending on which one is closer to the current
   default (e.g. 500 in this case). Or you can specify three values (e.g. wght=500:600:700)
@@ -13,7 +375,7 @@
 - [otlLib/featureVars] Set a few Count values so one doesn't need to compile the font
   to update them (#2860).
 - [varLib.models] Make extrapolation work for 2-master models as well where one master
-  is at the default location (#2843, #2846).  
+  is at the default location (#2843, #2846).
   Add optional extrapolate=False to normalizeLocation() (#2847, #2849).
 - [varLib.cff] Fixed sub-optimal packing of CFF2 deltas by no longer rounding them to
   integer (#2838).

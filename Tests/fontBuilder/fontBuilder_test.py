@@ -1,5 +1,6 @@
 import os
 import pytest
+from fontTools.designspaceLib import AxisDescriptor
 from fontTools.ttLib import TTFont
 from fontTools.pens.ttGlyphPen import TTGlyphPen
 from fontTools.pens.t2CharStringPen import T2CharStringPen
@@ -44,14 +45,20 @@ def _setupFontBuilder(isTTF, unitsPerEm=1024):
 def _setupFontBuilderFvar(fb):
     assert "name" in fb.font, "Must run setupNameTable() first."
 
-    axes = [
-        ("TEST", 0, 0, 100, "Test Axis"),
-    ]
+    testAxis = AxisDescriptor()
+    testAxis.name = "Test Axis"
+    testAxis.tag = "TEST"
+    testAxis.minimum = 0
+    testAxis.default = 0
+    testAxis.maximum = 100
+    testAxis.map = [(0, 0), (40, 60), (100, 100)]
+    axes = [testAxis]
     instances = [
         dict(location=dict(TEST=0), stylename="TotallyNormal"),
         dict(location=dict(TEST=100), stylename="TotallyTested"),
     ]
     fb.setupFvar(axes, instances)
+    fb.setupAvar(axes)
 
     return fb
 
@@ -135,6 +142,29 @@ def test_build_ttf(tmpdir):
     fb.save(outPath)
 
     _verifyOutput(outPath)
+
+
+def test_build_cubic_ttf(tmp_path):
+    pen = TTGlyphPen(None)
+    pen.moveTo((100, 100))
+    pen.curveTo((200, 200), (300, 300), (400, 400))
+    pen.closePath()
+    glyph = pen.glyph()
+    glyphs = {"A": glyph}
+
+    # cubic outlines are not allowed in glyf table format 0
+    fb = FontBuilder(1000, isTTF=True, glyphDataFormat=0)
+    with pytest.raises(
+        ValueError, match="Glyph 'A' has cubic Bezier outlines, but glyphDataFormat=0"
+    ):
+        fb.setupGlyf(glyphs)
+    # can skip check if feeling adventurous
+    fb.setupGlyf(glyphs, validateGlyphFormat=False)
+
+    # cubics are (will be) allowed in glyf table format 1
+    fb = FontBuilder(1000, isTTF=True, glyphDataFormat=1)
+    fb.setupGlyf(glyphs)
+    assert "A" in fb.font["glyf"].glyphs
 
 
 def test_build_otf(tmpdir):
@@ -390,3 +420,48 @@ def test_unicodeVariationSequences(tmpdir):
     fb.setupCharacterMap(cmap, uvs)
     fb.save(outPath)
     _verifyOutput(outPath, tables=["cmap"])
+
+
+def test_setupPanose():
+    from fontTools.ttLib.tables.O_S_2f_2 import Panose
+
+    fb, advanceWidths, nameStrings = _setupFontBuilder(True)
+
+    pen = TTGlyphPen(None)
+    drawTestGlyph(pen)
+    glyph = pen.glyph()
+    glyphs = {".notdef": glyph, "A": glyph, "a": glyph, ".null": glyph}
+    fb.setupGlyf(glyphs)
+    metrics = {}
+    glyphTable = fb.font["glyf"]
+    for gn, advanceWidth in advanceWidths.items():
+        metrics[gn] = (advanceWidth, glyphTable[gn].xMin)
+    fb.setupHorizontalMetrics(metrics)
+
+    fb.setupHorizontalHeader(ascent=824, descent=200)
+    fb.setupNameTable(nameStrings)
+    fb.setupOS2()
+    fb.setupPost()
+
+    panoseValues = {  # sample value of Times New Roman from https://www.w3.org/Printing/stevahn.html
+        "bFamilyType": 2,
+        "bSerifStyle": 2,
+        "bWeight": 6,
+        "bProportion": 3,
+        "bContrast": 5,
+        "bStrokeVariation": 4,
+        "bArmStyle": 5,
+        "bLetterForm": 2,
+        "bMidline": 3,
+        "bXHeight": 4,
+    }
+    panoseObj = Panose(**panoseValues)
+
+    for name in panoseValues:
+        assert getattr(fb.font["OS/2"].panose, name) == 0
+
+    fb.setupOS2(panose=panoseObj)
+    fb.setupPost()
+
+    for name, value in panoseValues.items():
+        assert getattr(fb.font["OS/2"].panose, name) == value

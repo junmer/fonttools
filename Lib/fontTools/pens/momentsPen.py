@@ -2,15 +2,12 @@ from fontTools.pens.basePen import BasePen, OpenContourError
 
 try:
     import cython
-except ImportError:
+
+    COMPILED = cython.compiled
+except (AttributeError, ImportError):
     # if cython not installed, use mock module with no-op decorators and types
     from fontTools.misc import cython
 
-if cython.compiled:
-    # Yep, I'm compiled.
-    COMPILED = True
-else:
-    # Just a lowly interpreted script.
     COMPILED = False
 
 
@@ -39,8 +36,7 @@ class MomentsPen(BasePen):
     def _endPath(self):
         p0 = self._getCurrentPoint()
         if p0 != self.__startPoint:
-            # Green theorem is not defined on open contours.
-            raise OpenContourError("Green theorem is not defined on open contours.")
+            raise OpenContourError("Glyph statistics not defined on open contours.")
 
     @cython.locals(r0=cython.double)
     @cython.locals(r1=cython.double)

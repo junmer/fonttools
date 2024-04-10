@@ -42,7 +42,6 @@ except ImportError:
 
 
 class WOFF2Reader(SFNTReader):
-
     flavor = "woff2"
 
     def __init__(self, file, checkChecksums=0, fontNumber=-1):
@@ -177,7 +176,6 @@ class WOFF2Reader(SFNTReader):
 
 
 class WOFF2Writer(SFNTWriter):
-
     flavor = "woff2"
 
     def __init__(
@@ -266,7 +264,9 @@ class WOFF2Writer(SFNTWriter):
         # See:
         # https://github.com/google/woff2/pull/3
         # https://lists.w3.org/Archives/Public/public-webfonts-wg/2015Mar/0000.html
-        # TODO(user): remove to match spec once browsers are on newer OTS
+        #
+        # 2023: We rely on this in _transformTables where we expect that
+        # "loca" comes after "glyf" table.
         self.tables = OrderedDict(sorted(self.tables.items()))
 
         self.totalSfntSize = self._calcSFNTChecksumsLengthsAndOffsets()
@@ -292,8 +292,9 @@ class WOFF2Writer(SFNTWriter):
         if self.sfntVersion == "OTTO":
             return
 
-        for tag in ("maxp", "head", "loca", "glyf"):
-            self._decompileTable(tag)
+        for tag in ("maxp", "head", "loca", "glyf", "fvar"):
+            if tag in self.tables:
+                self._decompileTable(tag)
         self.ttFont["glyf"].padding = padding
         for tag in ("glyf", "loca"):
             self._compileTable(tag)
@@ -355,6 +356,10 @@ class WOFF2Writer(SFNTWriter):
                 if data is not None:
                     entry.transformed = True
             if data is None:
+                if tag == "glyf":
+                    # Currently we always sort table tags so
+                    # 'loca' comes after 'glyf'.
+                    transformedTables.discard("loca")
                 # pass-through the table data without transformation
                 data = entry.data
                 entry.transformed = False
@@ -845,7 +850,10 @@ class WOFF2GlyfTable(getTableClass("glyf")):
 
         self.overlapSimpleBitmap = array.array("B", [0] * ((self.numGlyphs + 7) >> 3))
         for glyphID in range(self.numGlyphs):
-            self._encodeGlyph(glyphID)
+            try:
+                self._encodeGlyph(glyphID)
+            except NotImplementedError:
+                return None
         hasOverlapSimpleBitmap = any(self.overlapSimpleBitmap)
 
         self.bboxStream = self.bboxBitmap.tobytes() + self.bboxStream
@@ -1009,6 +1017,8 @@ class WOFF2GlyfTable(getTableClass("glyf")):
             return
         elif glyph.isComposite():
             self._encodeComponents(glyph)
+        elif glyph.isVarComposite():
+            raise NotImplementedError
         else:
             self._encodeCoordinates(glyph)
             self._encodeOverlapSimpleFlag(glyph, glyphID)
@@ -1029,6 +1039,8 @@ class WOFF2GlyfTable(getTableClass("glyf")):
 
     def _encodeCoordinates(self, glyph):
         lastEndPoint = -1
+        if _g_l_y_f.flagCubic in glyph.flags:
+            raise NotImplementedError
         for endPoint in glyph.endPtsOfContours:
             ptsOfContour = endPoint - lastEndPoint
             self.nPointsStream += pack255UShort(ptsOfContour)
@@ -1277,7 +1289,6 @@ class WOFF2HmtxTable(getTableClass("hmtx")):
 
 
 class WOFF2FlavorData(WOFFFlavorData):
-
     Flavor = "woff2"
 
     def __init__(self, reader=None, data=None, transformedTables=None):

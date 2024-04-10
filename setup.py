@@ -46,9 +46,7 @@ env_with_cython = os.environ.get("FONTTOOLS_WITH_CYTHON")
 with_cython = (
     True
     if env_with_cython in {"1", "true", "yes"}
-    else False
-    if env_with_cython in {"0", "false", "no"}
-    else None
+    else False if env_with_cython in {"0", "false", "no"} else None
 )
 # --with-cython/--without-cython options override environment variables
 opt_with_cython = {"--with-cython"}.intersection(sys.argv)
@@ -74,6 +72,12 @@ if with_cython is True or (with_cython is None and has_cython):
         Extension("fontTools.cu2qu.cu2qu", ["Lib/fontTools/cu2qu/cu2qu.py"]),
     )
     ext_modules.append(
+        Extension("fontTools.qu2cu.qu2cu", ["Lib/fontTools/qu2cu/qu2cu.py"]),
+    )
+    ext_modules.append(
+        Extension("fontTools.misc.bezierTools", ["Lib/fontTools/misc/bezierTools.py"]),
+    )
+    ext_modules.append(
         Extension("fontTools.pens.momentsPen", ["Lib/fontTools/pens/momentsPen.py"]),
     )
     ext_modules.append(
@@ -91,7 +95,7 @@ extras_require = {
     # for fontTools.misc.etree and fontTools.misc.plistlib: use lxml to
     # read/write XML files (faster/safer than built-in ElementTree)
     "lxml": [
-        "lxml >= 4.0, < 5",
+        "lxml >= 4.0",
     ],
     # for fontTools.sfnt and fontTools.woff2: to compress/uncompress
     # WOFF 1.0 and WOFF 2.0 webfonts.
@@ -104,8 +108,7 @@ extras_require = {
     # of the Unicode Character Database instead of the built-in unicodedata
     # which varies between python versions and may be outdated.
     "unicode": [
-        # Python 3.12 will have Unicode 15.0, so the backport is not needed.
-        ("unicodedata2 >= 15.0.0; python_version <= '3.11'"),
+        ("unicodedata2 >= 15.1.0; python_version <= '3.12'"),
     ],
     # for graphite type tables in ttLib/tables (Silf, Glat, Gloc)
     "graphite": ["lz4 >= 1.7.4.2"],
@@ -115,6 +118,9 @@ extras_require = {
         # use pure-python alternative on pypy
         "scipy; platform_python_implementation != 'PyPy'",
         "munkres; platform_python_implementation == 'PyPy'",
+        # to output PDF or HTML reports. NOTE: wheels are only available for
+        # windows currently, other platforms will need to build from source.
+        "pycairo",
     ],
     # for fontTools.varLib.plot, to visualize DesignSpaceDocument and resulting
     # VariationModel
@@ -155,11 +161,11 @@ classifiers = {
         "Natural Language :: English",
         "Operating System :: OS Independent",
         "Programming Language :: Python",
-        "Programming Language :: Python :: 3.7",
         "Programming Language :: Python :: 3.8",
         "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
         "Programming Language :: Python :: 3",
         "Topic :: Text Processing :: Fonts",
         "Topic :: Multimedia :: Graphics",
@@ -236,7 +242,7 @@ class release(Command):
     ]
 
     changelog_name = "NEWS.rst"
-    version_RE = re.compile("^[0-9]+\.[0-9]+")
+    version_RE = re.compile(r"^[0-9]+\.[0-9]+")
     date_fmt = "%Y-%m-%d"
     header_fmt = "%s (released %s)"
     commit_message = "Release {new_version}"
@@ -462,7 +468,7 @@ if ext_modules:
 
 setup_params = dict(
     name="fonttools",
-    version="4.38.1.dev0",
+    version="4.51.1.dev0",
     description="Tools to manipulate font files",
     author="Just van Rossum",
     author_email="just@letterror.com",
@@ -471,7 +477,7 @@ setup_params = dict(
     url="http://github.com/fonttools/fonttools",
     license="MIT",
     platforms=["Any"],
-    python_requires=">=3.7",
+    python_requires=">=3.8",
     long_description=long_description,
     package_dir={"": "Lib"},
     packages=find_packages("Lib"),

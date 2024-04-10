@@ -11,6 +11,10 @@ from fontTools.misc.textTools import (
 )
 from fontTools.misc.encodingTools import getEncoding
 from fontTools.ttLib import newTable
+from fontTools.ttLib.ttVisitor import TTVisitor
+from fontTools import ttLib
+import fontTools.ttLib.tables.otTables as otTables
+from fontTools.ttLib.tables import C_P_A_L_
 from . import DefaultTable
 import struct
 import logging
@@ -223,6 +227,25 @@ class table__n_a_m_e(DefaultTable.DefaultTable):
             )
         ]
 
+    @staticmethod
+    def removeUnusedNames(ttFont):
+        """Remove any name records which are not in NameID range 0-255 and not utilized
+        within the font itself."""
+        visitor = NameRecordVisitor()
+        visitor.visit(ttFont)
+        toDelete = set()
+        for record in ttFont["name"].names:
+            # Name IDs 26 to 255, inclusive, are reserved for future standard names.
+            # https://learn.microsoft.com/en-us/typography/opentype/spec/name#name-ids
+            if record.nameID < 256:
+                continue
+            if record.nameID not in visitor.seen:
+                toDelete.add(record.nameID)
+
+        for nameID in toDelete:
+            ttFont["name"].removeNames(nameID)
+        return toDelete
+
     def _findUnusedNameID(self, minNameID=256):
         """Finds an unused name id.
 
@@ -235,7 +258,9 @@ class table__n_a_m_e(DefaultTable.DefaultTable):
             raise ValueError("nameID must be less than 32768")
         return nameID
 
-    def findMultilingualName(self, names, windows=True, mac=True, minNameID=0):
+    def findMultilingualName(
+        self, names, windows=True, mac=True, minNameID=0, ttFont=None
+    ):
         """Return the name ID of an existing multilingual name that
         matches the 'names' dictionary, or None if not found.
 
@@ -270,7 +295,7 @@ class table__n_a_m_e(DefaultTable.DefaultTable):
                         )
                     )
             if mac:
-                macName = _makeMacName(name, None, lang)
+                macName = _makeMacName(name, None, lang, ttFont)
                 if macName is not None:
                     reqNameSet.add(
                         (
@@ -329,7 +354,7 @@ class table__n_a_m_e(DefaultTable.DefaultTable):
         if nameID is None:
             # Reuse nameID if possible
             nameID = self.findMultilingualName(
-                names, windows=windows, mac=mac, minNameID=minNameID
+                names, windows=windows, mac=mac, minNameID=minNameID, ttFont=ttFont
             )
             if nameID is not None:
                 return nameID
@@ -610,31 +635,37 @@ class NameRecord(object):
             return NotImplemented
 
         try:
-            # implemented so that list.sort() sorts according to the spec.
             selfTuple = (
                 self.platformID,
                 self.platEncID,
                 self.langID,
                 self.nameID,
-                self.toBytes(),
             )
             otherTuple = (
                 other.platformID,
                 other.platEncID,
                 other.langID,
                 other.nameID,
-                other.toBytes(),
             )
-            return selfTuple < otherTuple
-        except (UnicodeEncodeError, AttributeError):
+        except AttributeError:
             # This can only happen for
             # 1) an object that is not a NameRecord, or
             # 2) an unlikely incomplete NameRecord object which has not been
-            #    fully populated, or
-            # 3) when all IDs are identical but the strings can't be encoded
-            #    for their platform encoding.
-            # In all cases it is best to return NotImplemented.
+            #    fully populated
             return NotImplemented
+
+        try:
+            # Include the actual NameRecord string in the comparison tuples
+            selfTuple = selfTuple + (self.toBytes(),)
+            otherTuple = otherTuple + (other.toBytes(),)
+        except UnicodeEncodeError as e:
+            # toBytes caused an encoding error in either of the two, so content
+            # to sorting based on IDs only
+            log.error("NameRecord sorting failed to encode: %s" % e)
+
+        # Implemented so that list.sort() sorts according to the spec by using
+        # the order of the tuple items and their comparison
+        return selfTuple < otherTuple
 
     def __repr__(self):
         return "<NameRecord NameID=%d; PlatformID=%d; LanguageID=%d>" % (
@@ -1132,3 +1163,66 @@ _MAC_LANGUAGE_TO_SCRIPT = {
     150: 0,  # langAzerbaijanRoman → smRoman
     151: 0,  # langNynorsk → smRoman
 }
+
+
+class NameRecordVisitor(TTVisitor):
+    # Font tables that have NameIDs we need to collect.
+    TABLES = ("GSUB", "GPOS", "fvar", "CPAL", "STAT")
+
+    def __init__(self):
+        self.seen = set()
+
+
+@NameRecordVisitor.register_attrs(
+    (
+        (otTables.FeatureParamsSize, ("SubfamilyID", "SubfamilyNameID")),
+        (otTables.FeatureParamsStylisticSet, ("UINameID",)),
+        (
+            otTables.FeatureParamsCharacterVariants,
+            (
+                "FeatUILabelNameID",
+                "FeatUITooltipTextNameID",
+                "SampleTextNameID",
+                "FirstParamUILabelNameID",
+            ),
+        ),
+        (otTables.STAT, ("ElidedFallbackNameID",)),
+        (otTables.AxisRecord, ("AxisNameID",)),
+        (otTables.AxisValue, ("ValueNameID",)),
+        (otTables.FeatureName, ("FeatureNameID",)),
+        (otTables.Setting, ("SettingNameID",)),
+    )
+)
+def visit(visitor, obj, attr, value):
+    visitor.seen.add(value)
+
+
+@NameRecordVisitor.register(ttLib.getTableClass("fvar"))
+def visit(visitor, obj):
+    for inst in obj.instances:
+        if inst.postscriptNameID != 0xFFFF:
+            visitor.seen.add(inst.postscriptNameID)
+        visitor.seen.add(inst.subfamilyNameID)
+
+    for axis in obj.axes:
+        visitor.seen.add(axis.axisNameID)
+
+
+@NameRecordVisitor.register(ttLib.getTableClass("CPAL"))
+def visit(visitor, obj):
+    if obj.version == 1:
+        visitor.seen.update(obj.paletteLabels)
+        visitor.seen.update(obj.paletteEntryLabels)
+
+
+@NameRecordVisitor.register(ttLib.TTFont)
+def visit(visitor, font, *args, **kwargs):
+    if hasattr(visitor, "font"):
+        return False
+
+    visitor.font = font
+    for tag in visitor.TABLES:
+        if tag in font:
+            visitor.visit(font[tag], *args, **kwargs)
+    del visitor.font
+    return False

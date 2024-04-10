@@ -345,7 +345,7 @@ class SFNTWriter(object):
                 self.file.seek(0, 2)
                 off = self.file.tell()
                 paddedOff = (off + 3) & ~3
-                self.file.write("\0" * (paddedOff - off))
+                self.file.write(b"\0" * (paddedOff - off))
                 self.privOffset = self.file.tell()
                 self.privLength = len(data.privData)
                 self.file.write(data.privData)
@@ -524,13 +524,11 @@ class DirectoryEntry(object):
 
 
 class SFNTDirectoryEntry(DirectoryEntry):
-
     format = sfntDirectoryEntryFormat
     formatSize = sfntDirectoryEntrySize
 
 
 class WOFFDirectoryEntry(DirectoryEntry):
-
     format = woffDirectoryEntryFormat
     formatSize = woffDirectoryEntrySize
 
@@ -571,7 +569,6 @@ class WOFFDirectoryEntry(DirectoryEntry):
 
 
 class WOFFFlavorData:
-
     Flavor = "woff"
 
     def __init__(self, reader=None):

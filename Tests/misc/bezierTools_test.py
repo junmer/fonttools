@@ -1,8 +1,10 @@
 import fontTools.misc.bezierTools as bezierTools
 from fontTools.misc.bezierTools import (
     calcQuadraticBounds,
+    calcQuadraticArcLength,
     calcCubicBounds,
     curveLineIntersections,
+    curveCurveIntersections,
     segmentPointAtT,
     splitLine,
     splitQuadratic,
@@ -181,3 +183,17 @@ def test_intersections_straight_line():
     e = (110, 0)
     pt = (109.05194805194802, 0.0)
     assert bezierTools._line_t_of_pt(s, e, pt) == pytest.approx(0.98958184)
+
+
+def test_calcQuadraticArcLength():
+    # https://github.com/fonttools/fonttools/issues/3287
+    assert calcQuadraticArcLength(
+        (210, 333), (289, 333), (326.5, 290.5)
+    ) == pytest.approx(127.9225)
+
+
+def test_intersections_linelike():
+    seg1 = [(0.0, 0.0), (0.0, 0.25), (0.0, 0.75), (0.0, 1.0)]
+    seg2 = [(0.0, 0.5), (0.25, 0.5), (0.75, 0.5), (1.0, 0.5)]
+    pt = curveCurveIntersections(seg1, seg2)[0][0]
+    assert pt == (0.0, 0.5)

@@ -1,7 +1,13 @@
 from fontTools.colorLib.builder import buildCOLR
 from fontTools.ttLib import TTFont, newTable
 from fontTools.ttLib.tables import otTables as ot
-from fontTools.varLib import build, load_designspace, _add_COLR
+from fontTools.varLib import (
+    build,
+    build_many,
+    load_designspace,
+    _add_COLR,
+    addGSUBFeatureVariations,
+)
 from fontTools.varLib.errors import VarLibValidationError
 import fontTools.varLib.errors as varLibErrors
 from fontTools.varLib.models import VariationModel
@@ -220,6 +226,19 @@ class BuildTest(unittest.TestCase):
         https://github.com/fonttools/fonttools/issues/1011
         """
         test_name = "BuildAvarEmptyAxis"
+        self._run_varlib_build_test(
+            designspace_name=test_name,
+            font_name="TestFamily3",
+            tables=["avar"],
+            expected_ttx_name=test_name,
+        )
+
+    def test_varlib_avar2(self):
+        """Designspace file contains a 'weight' axis with <map> elements
+        modifying the normalization mapping as well as <mappings> element
+        modifying it post-normalization. An 'avar' table is generated.
+        """
+        test_name = "BuildAvar2"
         self._run_varlib_build_test(
             designspace_name=test_name,
             font_name="TestFamily3",
@@ -492,6 +511,99 @@ class BuildTest(unittest.TestCase):
         tables = [table_tag for table_tag in varfont.keys() if table_tag != "head"]
         expected_ttx_path = self.get_test_output("BuildMain.ttx")
         self.expect_ttx(varfont, expected_ttx_path, tables)
+
+    def test_varLib_main_output_dir(self):
+        self.temp_dir()
+        outdir = os.path.join(self.tempdir, "output_dir_test")
+        self.assertFalse(os.path.exists(outdir))
+
+        ds_path = os.path.join(self.tempdir, "BuildMain.designspace")
+        shutil.copy2(self.get_test_input("Build.designspace"), ds_path)
+
+        shutil.copytree(
+            self.get_test_input("master_ttx_interpolatable_ttf"),
+            os.path.join(outdir, "master_ttx"),
+        )
+
+        finder = "%s/output_dir_test/master_ttx/{stem}.ttx" % self.tempdir
+
+        varLib_main([ds_path, "--output-dir", outdir, "--master-finder", finder])
+
+        self.assertTrue(os.path.isdir(outdir))
+        self.assertTrue(os.path.exists(os.path.join(outdir, "BuildMain-VF.ttf")))
+
+    def test_varLib_main_filter_variable_fonts(self):
+        self.temp_dir()
+        outdir = os.path.join(self.tempdir, "filter_variable_fonts_test")
+        self.assertFalse(os.path.exists(outdir))
+
+        ds_path = os.path.join(self.tempdir, "BuildMain.designspace")
+        shutil.copy2(self.get_test_input("Build.designspace"), ds_path)
+
+        shutil.copytree(
+            self.get_test_input("master_ttx_interpolatable_ttf"),
+            os.path.join(outdir, "master_ttx"),
+        )
+
+        finder = "%s/filter_variable_fonts_test/master_ttx/{stem}.ttx" % self.tempdir
+
+        cmd = [ds_path, "--output-dir", outdir, "--master-finder", finder]
+
+        with pytest.raises(SystemExit):
+            varLib_main(cmd + ["--variable-fonts", "FooBar"])  # no font matches
+
+        varLib_main(cmd + ["--variable-fonts", "Build.*"])  # this does match
+
+        self.assertTrue(os.path.isdir(outdir))
+        self.assertTrue(os.path.exists(os.path.join(outdir, "BuildMain-VF.ttf")))
+
+    def test_varLib_main_drop_implied_oncurves(self):
+        self.temp_dir()
+        outdir = os.path.join(self.tempdir, "drop_implied_oncurves_test")
+        self.assertFalse(os.path.exists(outdir))
+
+        ttf_dir = os.path.join(outdir, "master_ttf_interpolatable")
+        os.makedirs(ttf_dir)
+        ttx_dir = self.get_test_input("master_ttx_drop_oncurves")
+        ttx_paths = self.get_file_list(ttx_dir, ".ttx", "TestFamily-")
+        for path in ttx_paths:
+            self.compile_font(path, ".ttf", ttf_dir)
+
+        ds_copy = os.path.join(outdir, "DropOnCurves.designspace")
+        ds_path = self.get_test_input("DropOnCurves.designspace")
+        shutil.copy2(ds_path, ds_copy)
+
+        finder = "%s/master_ttf_interpolatable/{stem}.ttf" % outdir
+        varLib_main([ds_copy, "--master-finder", finder, "--drop-implied-oncurves"])
+
+        vf_path = os.path.join(outdir, "DropOnCurves-VF.ttf")
+        varfont = TTFont(vf_path)
+        tables = [table_tag for table_tag in varfont.keys() if table_tag != "head"]
+        expected_ttx_path = self.get_test_output("DropOnCurves.ttx")
+        self.expect_ttx(varfont, expected_ttx_path, tables)
+
+    def test_varLib_build_many_no_overwrite_STAT(self):
+        # Ensure that varLib.build_many doesn't overwrite a pre-existing STAT table,
+        # e.g. one built by feaLib from features.fea; the VF simply should inherit the
+        # STAT from the base master: https://github.com/googlefonts/fontmake/issues/985
+        base_master = TTFont()
+        base_master.importXML(
+            self.get_test_input("master_no_overwrite_stat/Test-CondensedThin.ttx")
+        )
+        assert "STAT" in base_master
+
+        vf = next(
+            iter(
+                build_many(
+                    DesignSpaceDocument.fromfile(
+                        self.get_test_input("TestNoOverwriteSTAT.designspace")
+                    )
+                ).values()
+            )
+        )
+        assert "STAT" in vf
+
+        assert vf["STAT"].table == base_master["STAT"].table
 
     def test_varlib_build_from_ds_object_in_memory_ttfonts(self):
         ds_path = self.get_test_input("Build.designspace")
@@ -844,7 +956,6 @@ Expected: kern, mark.
 Got: kern.
 """,
         ):
-
             self._run_varlib_build_test(
                 designspace_name="IncompatibleFeatures",
                 font_name="IncompatibleFeatures",
@@ -893,6 +1004,42 @@ Expected to see .ScriptCount==1, instead saw 0""",
             expected_ttx_name="TestVariableCOLR-VF",
             save_before_dump=True,
         )
+
+    def test_varlib_build_variable_cff2_with_empty_sparse_glyph(self):
+        # https://github.com/fonttools/fonttools/issues/3233
+        self._run_varlib_build_test(
+            designspace_name="SparseCFF2",
+            font_name="SparseCFF2",
+            tables=["GlyphOrder", "CFF2", "fvar", "hmtx", "HVAR"],
+            expected_ttx_name="SparseCFF2-VF",
+            save_before_dump=True,
+        )
+
+    def test_varlib_addGSUBFeatureVariations(self):
+        ttx_dir = self.get_test_input("master_ttx_interpolatable_ttf")
+
+        ds = DesignSpaceDocument.fromfile(
+            self.get_test_input("FeatureVars.designspace")
+        )
+        for source in ds.sources:
+            ttx_dump = TTFont()
+            ttx_dump.importXML(
+                os.path.join(
+                    ttx_dir, os.path.basename(source.filename).replace(".ufo", ".ttx")
+                )
+            )
+            source.font = ttx_dump
+
+        varfont, _, _ = build(ds, exclude=["GSUB"])
+        assert "GSUB" not in varfont
+
+        addGSUBFeatureVariations(varfont, ds)
+        assert "GSUB" in varfont
+
+        tables = ["fvar", "GSUB"]
+        expected_ttx_path = self.get_test_output("FeatureVars.ttx")
+        self.expect_ttx(varfont, expected_ttx_path, tables)
+        self.check_ttx_dump(varfont, expected_ttx_path, tables, ".ttf")
 
 
 def test_load_masters_layerName_without_required_font():

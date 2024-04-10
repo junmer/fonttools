@@ -34,8 +34,9 @@ from fontTools.otlLib.error import OpenTypeLibError
 from fontTools.varLib.varStore import OnlineVarStoreBuilder
 from fontTools.varLib.builder import buildVarDevTable
 from fontTools.varLib.featureVars import addFeatureVariationsRaw
-from fontTools.varLib.models import normalizeValue
+from fontTools.varLib.models import normalizeValue, piecewiseLinearMap
 from collections import defaultdict
+import copy
 import itertools
 from io import StringIO
 import logging
@@ -90,7 +91,6 @@ def addOpenTypeFeaturesFromString(
 
 
 class Builder(object):
-
     supportedTables = frozenset(
         Tag(tag)
         for tag in [
@@ -176,6 +176,10 @@ class Builder(object):
         self.stat_ = {}
         # for conditionsets
         self.conditionsets_ = {}
+        # We will often use exactly the same locations (i.e. the font's masters)
+        # for a large number of variable scalars. Instead of creating a model
+        # for each, let's share the models.
+        self.model_cache = {}
 
     def build(self, tables=None, debug=False):
         if self.parseTree is None:
@@ -281,7 +285,11 @@ class Builder(object):
     def build_feature_aalt_(self):
         if not self.aalt_features_ and not self.aalt_alternates_:
             return
-        alternates = {g: set(a) for g, a in self.aalt_alternates_.items()}
+        # > alternate glyphs will be sorted in the order that the source features
+        # > are named in the aalt definition, not the order of the feature definitions
+        # > in the file. Alternates defined explicitly ... will precede all others.
+        # https://github.com/fonttools/fonttools/issues/836
+        alternates = {g: list(a) for g, a in self.aalt_alternates_.items()}
         for location, name in self.aalt_features_ + [(None, "aalt")]:
             feature = [
                 (script, lang, feature, lookups)
@@ -290,26 +298,22 @@ class Builder(object):
             ]
             # "aalt" does not have to specify its own lookups, but it might.
             if not feature and name != "aalt":
-                raise FeatureLibError(
-                    "Feature %s has not been defined" % name, location
-                )
+                warnings.warn("%s: Feature %s has not been defined" % (location, name))
+                continue
             for script, lang, feature, lookups in feature:
                 for lookuplist in lookups:
                     if not isinstance(lookuplist, list):
                         lookuplist = [lookuplist]
                     for lookup in lookuplist:
                         for glyph, alts in lookup.getAlternateGlyphs().items():
-                            alternates.setdefault(glyph, set()).update(alts)
+                            alts_for_glyph = alternates.setdefault(glyph, [])
+                            alts_for_glyph.extend(
+                                g for g in alts if g not in alts_for_glyph
+                            )
         single = {
-            glyph: list(repl)[0] for glyph, repl in alternates.items() if len(repl) == 1
+            glyph: repl[0] for glyph, repl in alternates.items() if len(repl) == 1
         }
-        # TODO: Figure out the glyph alternate ordering used by makeotf.
-        # https://github.com/fonttools/fonttools/issues/836
-        multi = {
-            glyph: sorted(repl, key=self.font.getGlyphID)
-            for glyph, repl in alternates.items()
-            if len(repl) > 1
-        }
+        multi = {glyph: repl for glyph, repl in alternates.items() if len(repl) > 1}
         if not single and not multi:
             return
         self.features_ = {
@@ -771,7 +775,7 @@ class Builder(object):
                 gdef.remap_device_varidxes(varidx_map)
                 if "GPOS" in self.font:
                     self.font["GPOS"].table.remap_device_varidxes(varidx_map)
-            VariableScalar.clear_cache()
+            self.model_cache.clear()
         if any(
             (
                 gdef.GlyphClassDef,
@@ -842,10 +846,15 @@ class Builder(object):
                 feature=None,
             )
             lookups.append(lookup)
-        try:
-            otLookups = [l.build() for l in lookups]
-        except OpenTypeLibError as e:
-            raise FeatureLibError(str(e), e.location) from e
+        otLookups = []
+        for l in lookups:
+            try:
+                otLookups.append(l.build())
+            except OpenTypeLibError as e:
+                raise FeatureLibError(str(e), e.location) from e
+            except Exception as e:
+                location = self.lookup_locations[tag][str(l.lookup_index)].location
+                raise FeatureLibError(str(e), location) from e
         return otLookups
 
     def makeTable(self, tag):
@@ -947,11 +956,7 @@ class Builder(object):
         feature_vars = {}
         has_any_variations = False
         # Sort out which lookups to build, gather their indices
-        for (
-            script_,
-            language,
-            feature_tag,
-        ), variations in self.feature_variations_.items():
+        for (_, _, feature_tag), variations in self.feature_variations_.items():
             feature_vars[feature_tag] = []
             for conditionset, builders in variations.items():
                 raw_conditionset = self.conditionsets_[conditionset]
@@ -1244,15 +1249,16 @@ class Builder(object):
     # GSUB 1
     def add_single_subst(self, location, prefix, suffix, mapping, forceChain):
         if self.cur_feature_name_ == "aalt":
-            for (from_glyph, to_glyph) in mapping.items():
-                alts = self.aalt_alternates_.setdefault(from_glyph, set())
-                alts.add(to_glyph)
+            for from_glyph, to_glyph in mapping.items():
+                alts = self.aalt_alternates_.setdefault(from_glyph, [])
+                if to_glyph not in alts:
+                    alts.append(to_glyph)
             return
         if prefix or suffix or forceChain:
             self.add_single_subst_chained_(location, prefix, suffix, mapping)
             return
         lookup = self.get_lookup_(location, SingleSubstBuilder)
-        for (from_glyph, to_glyph) in mapping.items():
+        for from_glyph, to_glyph in mapping.items():
             if from_glyph in lookup.mapping:
                 if to_glyph == lookup.mapping[from_glyph]:
                     log.info(
@@ -1299,8 +1305,8 @@ class Builder(object):
     # GSUB 3
     def add_alternate_subst(self, location, prefix, glyph, suffix, replacement):
         if self.cur_feature_name_ == "aalt":
-            alts = self.aalt_alternates_.setdefault(glyph, set())
-            alts.update(replacement)
+            alts = self.aalt_alternates_.setdefault(glyph, [])
+            alts.extend(g for g in replacement if g not in alts)
             return
         if prefix or suffix:
             chain = self.get_lookup_(location, ChainContextSubstBuilder)
@@ -1334,7 +1340,7 @@ class Builder(object):
         # substitutions to be specified on target sequences that contain
         # glyph classes, the implementation software will enumerate
         # all specific glyph sequences if glyph classes are detected"
-        for g in sorted(itertools.product(*glyphs)):
+        for g in itertools.product(*glyphs):
             lookup.ligatures[g] = replacement
 
     # GSUB 5/6
@@ -1356,8 +1362,9 @@ class Builder(object):
                 "Empty glyph class in contextual substitution", location
             )
         # https://github.com/fonttools/fonttools/issues/512
+        # https://github.com/fonttools/fonttools/issues/2150
         chain = self.get_lookup_(location, ChainContextSubstBuilder)
-        sub = chain.find_chainable_single_subst(set(mapping.keys()))
+        sub = chain.find_chainable_single_subst(mapping)
         if sub is None:
             sub = self.get_chained_lookup_(location, SingleSubstBuilder)
         sub.mapping.update(mapping)
@@ -1512,7 +1519,7 @@ class Builder(object):
                 for mark in markClassDef.glyphs.glyphSet():
                     if mark not in lookupBuilder.marks:
                         otMarkAnchor = self.makeOpenTypeAnchor(
-                            location, markClassDef.anchor
+                            location, copy.deepcopy(markClassDef.anchor)
                         )
                         lookupBuilder.marks[mark] = (markClass.name, otMarkAnchor)
                     else:
@@ -1554,7 +1561,16 @@ class Builder(object):
             if glyph not in self.ligCaretPoints_:
                 self.ligCaretPoints_[glyph] = carets
 
+    def makeLigCaret(self, location, caret):
+        if not isinstance(caret, VariableScalar):
+            return caret
+        default, device = self.makeVariablePos(location, caret)
+        if device is not None:
+            return (default, device)
+        return default
+
     def add_ligatureCaretByPos_(self, location, glyphs, carets):
+        carets = [self.makeLigCaret(location, caret) for caret in carets]
         for glyph in glyphs:
             if glyph not in self.ligCaretCoords_:
                 self.ligCaretCoords_[glyph] = carets
@@ -1571,10 +1587,11 @@ class Builder(object):
     def add_vhea_field(self, key, value):
         self.vhea_[key] = value
 
-    def add_conditionset(self, key, value):
-        if not "fvar" in self.font:
+    def add_conditionset(self, location, key, value):
+        if "fvar" not in self.font:
             raise FeatureLibError(
-                "Cannot add feature variations to a font without an 'fvar' table"
+                "Cannot add feature variations to a font without an 'fvar' table",
+                location,
             )
 
         # Normalize
@@ -1591,7 +1608,40 @@ class Builder(object):
             for tag, (bottom, top) in value.items()
         }
 
+        # NOTE: This might result in rounding errors (off-by-ones) compared to
+        # rules in Designspace files, since we're working with what's in the
+        # `avar` table rather than the original values.
+        if "avar" in self.font:
+            mapping = self.font["avar"].segments
+            value = {
+                axis: tuple(
+                    piecewiseLinearMap(v, mapping[axis]) if axis in mapping else v
+                    for v in condition_range
+                )
+                for axis, condition_range in value.items()
+            }
+
         self.conditionsets_[key] = value
+
+    def makeVariablePos(self, location, varscalar):
+        if not self.varstorebuilder:
+            raise FeatureLibError(
+                "Can't define a variable scalar in a non-variable font", location
+            )
+
+        varscalar.axes = self.axes
+        if not varscalar.does_vary:
+            return varscalar.default, None
+
+        default, index = varscalar.add_to_variation_store(
+            self.varstorebuilder, self.model_cache, self.font.get("avar")
+        )
+
+        device = None
+        if index is not None and index != 0xFFFFFFFF:
+            device = buildVarDevTable(index)
+
+        return default, device
 
     def makeOpenTypeAnchor(self, location, anchor):
         """ast.Anchor --> otTables.Anchor"""
@@ -1604,25 +1654,20 @@ class Builder(object):
         if anchor.yDeviceTable is not None:
             deviceY = otl.buildDevice(dict(anchor.yDeviceTable))
         for dim in ("x", "y"):
-            if not isinstance(getattr(anchor, dim), VariableScalar):
+            varscalar = getattr(anchor, dim)
+            if not isinstance(varscalar, VariableScalar):
                 continue
             if getattr(anchor, dim + "DeviceTable") is not None:
                 raise FeatureLibError(
                     "Can't define a device coordinate and variable scalar", location
                 )
-            if not self.varstorebuilder:
-                raise FeatureLibError(
-                    "Can't define a variable scalar in a non-variable font", location
-                )
-            varscalar = getattr(anchor, dim)
-            varscalar.axes = self.axes
-            default, index = varscalar.add_to_variation_store(self.varstorebuilder)
+            default, device = self.makeVariablePos(location, varscalar)
             setattr(anchor, dim, default)
-            if index is not None and index != 0xFFFFFFFF:
+            if device is not None:
                 if dim == "x":
-                    deviceX = buildVarDevTable(index)
+                    deviceX = device
                 else:
-                    deviceY = buildVarDevTable(index)
+                    deviceY = device
                 variable = True
 
         otlanchor = otl.buildAnchor(
@@ -1644,7 +1689,6 @@ class Builder(object):
             return None
 
         vr = {}
-        variable = False
         for astName, (otName, isDevice) in self._VALUEREC_ATTRS.items():
             val = getattr(v, astName, None)
             if not val:
@@ -1658,17 +1702,9 @@ class Builder(object):
                     raise FeatureLibError(
                         "Can't define a device coordinate and variable scalar", location
                     )
-                if not self.varstorebuilder:
-                    raise FeatureLibError(
-                        "Can't define a variable scalar in a non-variable font",
-                        location,
-                    )
-                val.axes = self.axes
-                default, index = val.add_to_variation_store(self.varstorebuilder)
-                vr[otName] = default
-                if index is not None and index != 0xFFFFFFFF:
-                    vr[otDeviceName] = buildVarDevTable(index)
-                    variable = True
+                vr[otName], device = self.makeVariablePos(location, val)
+                if device is not None:
+                    vr[otDeviceName] = device
             else:
                 vr[otName] = val
 

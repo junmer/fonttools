@@ -32,9 +32,9 @@ class SubsetTest:
             shutil.rmtree(cls.tempdir, ignore_errors=True)
 
     @staticmethod
-    def getpath(testfile):
+    def getpath(*testfile):
         path, _ = os.path.split(__file__)
-        return os.path.join(path, "data", testfile)
+        return os.path.join(path, "data", *testfile)
 
     @classmethod
     def temp_path(cls, suffix):
@@ -424,6 +424,18 @@ class SubsetTest:
         subset.main([fontpath, "--gids=0,1", "--output-file=%s" % subsetpath])
         subsetfont = TTFont(subsetpath)
         self.expect_ttx(subsetfont, self.getpath("expect_sbix.ttx"), ["sbix"])
+
+    def test_varComposite(self):
+        fontpath = self.getpath("..", "..", "ttLib", "data", "varc-ac00-ac01.ttf")
+        origfont = TTFont(fontpath)
+        assert len(origfont.getGlyphOrder()) == 6
+        subsetpath = self.temp_path(".ttf")
+        subset.main([fontpath, "--unicodes=ac00", "--output-file=%s" % subsetpath])
+        subsetfont = TTFont(subsetpath)
+        assert len(subsetfont.getGlyphOrder()) == 4
+        subset.main([fontpath, "--unicodes=ac01", "--output-file=%s" % subsetpath])
+        subsetfont = TTFont(subsetpath)
+        assert len(subsetfont.getGlyphOrder()) == 5
 
     def test_timing_publishes_parts(self):
         fontpath = self.compile_font(self.getpath("TestTTF-Regular.ttx"), ".ttf")
@@ -858,11 +870,10 @@ class SubsetTest:
             ["GlyphOrder", "HVAR", "VVAR", "avar", "fvar"],
         )
 
-    def test_subset_flavor(self):
+    def test_subset_flavor_woff(self):
         fontpath = self.compile_font(self.getpath("TestTTF-Regular.ttx"), ".ttf")
-        font = TTFont(fontpath)
-
         woff_path = self.temp_path(".woff")
+
         subset.main(
             [
                 fontpath,
@@ -875,10 +886,16 @@ class SubsetTest:
 
         assert woff.flavor == "woff"
 
+    def test_subset_flavor_woff2(self):
+        # skip if brotli is not importable, required for woff2
+        pytest.importorskip("brotli")
+
+        fontpath = self.compile_font(self.getpath("TestTTF-Regular.ttx"), ".ttf")
         woff2_path = self.temp_path(".woff2")
+
         subset.main(
             [
-                woff_path,
+                fontpath,
                 "*",
                 "--flavor=woff2",
                 "--output-file=%s" % woff2_path,
@@ -888,10 +905,13 @@ class SubsetTest:
 
         assert woff2.flavor == "woff2"
 
+    def test_subset_flavor_none(self):
+        fontpath = self.compile_font(self.getpath("TestTTF-Regular.ttx"), ".ttf")
         ttf_path = self.temp_path(".ttf")
+
         subset.main(
             [
-                woff2_path,
+                fontpath,
                 "*",
                 "--output-file=%s" % ttf_path,
             ]
@@ -1053,6 +1073,26 @@ class SubsetTest:
             )
             in caplog.text
         ) ^ ok
+
+    def test_retain_east_asian_spacing_features(self):
+        # This test font contains halt and vhal features, check that
+        # they are retained by default after subsetting.
+        ttx_path = self.getpath("NotoSansCJKjp-Regular.subset.ttx")
+        ttx = pathlib.Path(ttx_path).read_text()
+        assert 'FeatureTag value="halt"' in ttx
+        assert 'FeatureTag value="vhal"' in ttx
+
+        fontpath = self.compile_font(ttx_path, ".otf")
+        subsetpath = self.temp_path(".otf")
+        subset.main(
+            [
+                fontpath,
+                "--unicodes=*",
+                "--output-file=%s" % subsetpath,
+            ]
+        )
+        # subset output is the same as the input
+        self.expect_ttx(TTFont(subsetpath), ttx_path)
 
 
 @pytest.fixture
@@ -1388,8 +1428,8 @@ def colrv1_path(tmp_path):
         clipBoxes={
             "uniE000": (0, 0, 200, 300),
             "uniE001": (0, 0, 500, 500),
-            "uniE002": (100, 100, 400, 400),
-            "uniE003": (-50, -50, 350, 350),
+            "uniE002": (-50, -50, 400, 400),
+            "uniE003": (-50, -50, 400, 400),
         },
     )
     fb.setupCPAL(
@@ -1520,6 +1560,7 @@ def test_subset_COLRv1_and_CPAL(colrv1_path):
 
     clipBoxes = colr.ClipList.clips
     assert {"uniE001", "uniE002", "uniE003"} == set(clipBoxes)
+    assert clipBoxes["uniE002"] == clipBoxes["uniE003"]
 
     assert "CPAL" in subset_font
     cpal = subset_font["CPAL"]
@@ -1846,5 +1887,139 @@ def test_subset_COLR_glyph_closure(tmp_path):
     assert "grave" not in color_layers
 
 
+def test_subset_recalc_xAvgCharWidth(ttf_path):
+    # Note that the font in in the *ttLib*/data/TestTTF-Regular.ttx file,
+    # not this subset/data folder.
+    font = TTFont(ttf_path)
+    xAvgCharWidth_before = font["OS/2"].xAvgCharWidth
+
+    subset_path = ttf_path.with_suffix(".subset.ttf")
+    subset.main(
+        [
+            str(ttf_path),
+            f"--output-file={subset_path}",
+            # Keep only the ellipsis, which is very wide, that ought to bump up the average
+            "--glyphs=ellipsis",
+            "--recalc-average-width",
+            "--no-prune-unicode-ranges",
+        ]
+    )
+    subset_font = TTFont(subset_path)
+    xAvgCharWidth_after = subset_font["OS/2"].xAvgCharWidth
+
+    # Check that the value gets updated
+    assert xAvgCharWidth_after != xAvgCharWidth_before
+
+    # Check that the value gets updated to the actual new value
+    subset_font["OS/2"].recalcAvgCharWidth(subset_font)
+    assert xAvgCharWidth_after == subset_font["OS/2"].xAvgCharWidth
+
+
 if __name__ == "__main__":
     sys.exit(unittest.main())
+
+
+def test_subset_prune_gdef_markglyphsetsdef():
+    # GDEF_MarkGlyphSetsDef
+    fb = FontBuilder(unitsPerEm=1000, isTTF=True)
+    glyph_order = [
+        ".notdef",
+        "A",
+        "Aacute",
+        "Acircumflex",
+        "Adieresis",
+        "a",
+        "aacute",
+        "acircumflex",
+        "adieresis",
+        "dieresiscomb",
+        "acutecomb",
+        "circumflexcomb",
+    ]
+    fb.setupGlyphOrder(glyph_order)
+    fb.setupGlyf({g: TTGlyphPen(None).glyph() for g in glyph_order})
+    fb.setupHorizontalMetrics({g: (500, 0) for g in glyph_order})
+    fb.setupHorizontalHeader()
+    fb.setupPost()
+    fb.setupNameTable(
+        {"familyName": "TestGDEFMarkGlyphSetsDef", "styleName": "Regular"}
+    )
+    fb.addOpenTypeFeatures(
+        """
+        feature ccmp {
+            lookup ccmp_1 {
+                lookupflag UseMarkFilteringSet [acutecomb];
+                sub a acutecomb by aacute;
+                sub A acutecomb by Aacute;
+            } ccmp_1;
+            lookup ccmp_2 {
+                lookupflag UseMarkFilteringSet [circumflexcomb];
+                sub a circumflexcomb by acircumflex;
+                sub A circumflexcomb by Acircumflex;
+            } ccmp_2;
+            lookup ccmp_3 {
+                lookupflag UseMarkFilteringSet [dieresiscomb];
+                sub a dieresiscomb by adieresis;
+                sub A dieresiscomb by Adieresis;
+                sub A acutecomb by Aacute;
+            } ccmp_3;
+        } ccmp;
+    """
+    )
+
+    buf = io.BytesIO()
+    fb.save(buf)
+    buf.seek(0)
+
+    font = TTFont(buf)
+
+    features = font["GSUB"].table.FeatureList.FeatureRecord
+    assert features[0].FeatureTag == "ccmp"
+    lookups = font["GSUB"].table.LookupList.Lookup
+    assert lookups[0].LookupFlag == 16
+    assert lookups[0].MarkFilteringSet == 0
+    assert lookups[1].LookupFlag == 16
+    assert lookups[1].MarkFilteringSet == 1
+    assert lookups[2].LookupFlag == 16
+    assert lookups[2].MarkFilteringSet == 2
+    marksets = font["GDEF"].table.MarkGlyphSetsDef.Coverage
+    assert marksets[0].glyphs == ["acutecomb"]
+    assert marksets[1].glyphs == ["circumflexcomb"]
+    assert marksets[2].glyphs == ["dieresiscomb"]
+
+    options = subset.Options(layout_features=["*"])
+    subsetter = subset.Subsetter(options)
+    subsetter.populate(glyphs=["A", "a", "acutecomb", "dieresiscomb"])
+    subsetter.subset(font)
+
+    features = font["GSUB"].table.FeatureList.FeatureRecord
+    assert features[0].FeatureTag == "ccmp"
+    lookups = font["GSUB"].table.LookupList.Lookup
+    assert lookups[0].LookupFlag == 16
+    assert lookups[0].MarkFilteringSet == 0
+    assert lookups[1].LookupFlag == 16
+    assert lookups[1].MarkFilteringSet == 1
+    marksets = font["GDEF"].table.MarkGlyphSetsDef.Coverage
+    assert marksets[0].glyphs == ["acutecomb"]
+    assert marksets[1].glyphs == ["dieresiscomb"]
+
+    buf = io.BytesIO()
+    fb.save(buf)
+    buf.seek(0)
+
+    font = TTFont(buf)
+
+    options = subset.Options(layout_features=["*"], layout_closure=False)
+    subsetter = subset.Subsetter(options)
+    subsetter.populate(glyphs=["A", "acutecomb", "Aacute"])
+    subsetter.subset(font)
+
+    features = font["GSUB"].table.FeatureList.FeatureRecord
+    assert features[0].FeatureTag == "ccmp"
+    lookups = font["GSUB"].table.LookupList.Lookup
+    assert lookups[0].LookupFlag == 16
+    assert lookups[0].MarkFilteringSet == 0
+    assert lookups[1].LookupFlag == 0
+    assert lookups[1].MarkFilteringSet == None
+    marksets = font["GDEF"].table.MarkGlyphSetsDef.Coverage
+    assert marksets[0].glyphs == ["acutecomb"]

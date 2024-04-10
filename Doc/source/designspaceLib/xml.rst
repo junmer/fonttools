@@ -20,10 +20,15 @@ Overview
 .. code:: xml
 
     <?xml version='1.0' encoding='utf-8'?>
-    <designspace format="5.0">
+    <designspace format="5.1">
         <axes>
             <!-- define axes here -->
             <axis... />
+            <mappings>
+                <!-- define axis mappings here -->
+                <!-- New in version 5.1 -->
+                <mapping... />
+            </mappings>
         </axes>
         <labels>
             <!-- define STAT format 4 labels here -->
@@ -255,6 +260,70 @@ Example of all axis elements together
     </axes>
 
 
+``<mappings>`` element
+======================
+
+-  Define an axis mappings group.
+-  Child element of ``axes``
+
+.. rubric:: Attributes
+
+- ``description``: optional, string. the description of this mappings group
+
+ .. versionadded:: 5.2
+
+
+``<mapping>`` element
+---------------------
+
+-  Defines an axis mapping.
+-  Child element of ``<mappings>``
+
+.. rubric:: Attributes
+
+- ``description``: optional, string. the description of this mapping
+
+ .. versionadded:: 5.2
+
+
+``<input>`` element
+...................
+
+-  Defines the input location of an axis mapping.
+-  Child element of ``<mapping>``
+-  Contains one or more ``<dimension>`` elements with designspace locations.
+
+ .. versionadded:: 5.1
+
+
+``<output>`` element
+...................
+
+-  Defines the output location of an axis mapping.
+-  Child element of ``<mapping>``
+-  Contains one or more ``<dimension>`` elements with designspace locations.
+
+ .. versionadded:: 5.1
+
+
+Example of all mappings elements together
+=========================================
+
+.. code:: xml
+
+    <mappings>
+        <mapping>
+            <input>
+                <dimension name="weight" xvalue="900"/>
+                <dimension name="width" xvalue="150"/>
+            </input>
+            <output>
+                <dimension name="weight" xvalue="870"/>
+            </output>
+        </mapping>
+    </mappings>
+
+
 ================================
 ``<labels>`` element (top-level)
 ================================
@@ -304,7 +373,7 @@ See: `OTSpec STAT Axis value table, format 4 <https://docs.microsoft.com/en-us/t
 ``<dimension>`` element
 .......................
 
--  Child element of ``<location>``
+-  Child element of ``<location>``, ``input``, or ``output`` elements
 
 .. rubric:: Attributes
 
@@ -375,8 +444,8 @@ glyphname pairs: the glyphs that need to be substituted. For a rule to be trigge
       See the following issues for more information:
       `fontTools#1371 <https://github.com/fonttools/fonttools/issues/1371#issuecomment-590214572>`__
       `fontTools#2050 <https://github.com/fonttools/fonttools/issues/2050#issuecomment-678691020>`__
-   -  If you want to use a different feature altogether, e.g. ``calt``,
-      use the lib key ``com.github.fonttools.varLib.featureVarsFeatureTag``
+   -  If you want to use a different feature(s) altogether, e.g. ``calt``,
+      use the lib key ``com.github.fonttools.varLib.featureVarsFeatureTag``.
 
       .. code:: xml
 
@@ -387,6 +456,9 @@ glyphname pairs: the glyphs that need to be substituted. For a rule to be trigge
                </dict>
            </lib>
 
+      This can also take a comma-separated list of feature tags, e.g. ``salt,ss01``,
+      if you wish the same rules to be applied with several features.
+
 
 
 ``<rule>`` element
@@ -394,7 +466,7 @@ glyphname pairs: the glyphs that need to be substituted. For a rule to be trigge
 
 -  Defines a named rule.
 -  Each ``<rule>`` element contains one or more ``<conditionset>`` elements.
--  **Only one** ``<conditionset>`` needs to be true to trigger the rule (logical OR).
+-  **Only one** ``<conditionset>`` needs to be true to trigger the rule (logical OR). An empty condition set is considered to be true, as in, the rule will be always-on.
 -  **All** conditions in a ``<conditionset>`` must be true to make the ``<conditionset>`` true. (logical AND)
 -  For backwards compatibility a ``<rule>`` can contain ``<condition>`` elements outside of a conditionset. These are then understood to be part of a single, implied, ``<conditionset>``. Note: these conditions should be written wrapped in a conditionset.
 -  A rule element needs to contain one or more ``<sub>`` elements in order to be compiled to a variable font.
@@ -412,7 +484,7 @@ glyphname pairs: the glyphs that need to be substituted. For a rule to be trigge
 --------------------------
 
 -  Child element of ``<rule>``
--  Contains one or more ``<condition>`` elements.
+-  Contains zero or more ``<condition>`` elements.
 
 
 ``<condition>`` element
@@ -511,7 +583,7 @@ The ``<sources>`` element contains one or more ``<source>`` elements.
    While this could be extracted from the font data itself, it can be
    more efficient to add it here.
 -  ``stylename``: optional, string. The style name of the source font.
--  ``name``: required, string. A unique name that can be used to
+-  ``name``: optional, string. A unique name that can be used to
    identify this font if it needs to be referenced elsewhere.
 -  ``filename``: required, string. A path to the source file, relative
    to the root path of this document. The path can be at the same level
@@ -727,7 +799,7 @@ The ``<variable-fonts>`` element contains one or more ``<variable-font>`` elemen
      but the design space is sliced at the given location. *Note:* While valid to have a
      specific value that doesn’t have a matching ``<source>`` at that value, currently there
      isn’t an implentation that supports this. See `this fontmake issue
-     <https://github.com/googlefonts/fontmake/issues/920>`.
+     <https://github.com/googlefonts/fontmake/issues/920>`_.
 
      .. code:: xml
 
@@ -779,6 +851,38 @@ Arbitrary data about this variable font.
 
 .. seealso:: :ref:`lib`
 
+Here is an example of using the ``public.fontInfo`` lib key to gain more granular
+control over the font info of a variable font, in this case setting some names to
+reflect the fact that this is a Narrow variable font subset from the larger designspace. 
+This lib key allows font info in variable fonts to be more specific than the font 
+info of the sources.
+
+.. rubric:: Example
+
+.. code:: xml
+
+    <variable-font name="MyFontNarrVF">
+      <axis-subsets>
+        <axis-subset name="Weight"/>
+        <axis-subset name="Width" uservalue="75"/>
+      </axis-subsets>
+      <lib>
+        <dict>
+          <key>public.fontInfo</key>
+          <dict>
+            <key>familyName</key>
+            <string>My Font Narrow VF</string>
+            <key>styleName</key>
+            <string>Regular</string>
+            <key>postscriptFontName</key>
+            <string>MyFontNarrVF-Regular</string>
+            <key>trademark</key>
+            <string>My Font Narrow VF is a registered trademark...</string>
+          </dict>
+        </dict>
+      </lib>
+    </variable-font>
+
 
 Instances included in the variable font
 ---------------------------------------
@@ -804,7 +908,7 @@ The ``<instances>`` element contains one or more ``<instance>`` elements.
 
 -  Defines a single font that can be calculated with the designspace.
 -  Child element of ``<instances>``
--  For use in Varlib the instance element really only needs the names
+-  For use in varLib the instance element really only needs the names
    and the location. The ``<glyphs>`` element is not required.
 -  MutatorMath uses the ``<glyphs>`` element to describe how certain
    glyphs need different masters, mainly to describe the effects of
@@ -829,6 +933,11 @@ The ``<instances>`` element contains one or more ``<instance>`` elements.
    with ``styleMapFamilyName``
 -  ``stylemapstylename``: string. Optional for MutatorMath. Corresponds
    with ``styleMapStyleName``
+-  ``location``: string. Optional. Describes the location of this instance,
+   taking it from the root level ``<labels>`` (STAT format 4) element with the
+   same name as the string.
+
+   .. versionadded:: 5.0
 
 
 ``<location>`` element (instance)
@@ -879,7 +988,7 @@ with an ``xml:lang`` attribute:
     <stylemapfamilyname xml:lang="ja">モンセラート SemiBold</stylemapfamilyname>
 
 
-Example for varlib
+Example for varLib
 ------------------
 
 .. code:: xml
@@ -897,6 +1006,81 @@ Example for varlib
     </lib>
     </instance>
 
+
+Here is an example using STAT format 4 labels to define the location of the
+instance directly.
+
+.. code:: xml
+
+    <?xml version='1.0' encoding='utf-8'?>
+    <designspace format="5.0">
+        <!-- ... -->
+        <labels>
+            <!-- define STAT format 4 labels here -->
+            <!-- New in version 5.0 -->
+            <label name="Extra Light">
+                <location>
+                    <dimension name="weight" uservalue="123" />
+                </location>
+            </label>
+        </labels>
+        <!-- ... -->
+        <instances>
+            <instance filename="instances/labelled.ufo" location="Extra Light" />
+        </instances>
+    </designspace>
+
+Here is an example of using the ``public.fontInfo`` lib key to gain more granular
+control over the font info of the instances. 
+
+``openTypeNameWWSFamilyName`` and ``openTypeNameWWSSubfamilyName`` are not able to 
+be set by attributes on the ``<instance>`` element. The ``openTypeOS2WeightClass`` 
+key is superseding the value that would have been set by the ``weight`` axis value. 
+The ``trademark`` key is superseding the value that would have been set by UFO source 
+at the origin. If the designer wishes to set name records for other encodings, 
+platforms or laguages, they should do so using the ``openTypeNameRecords`` key, like 
+they would in a UFO source.
+
+See `UFO3 fontinfo.plist specification <https://unifiedfontobject.org/versions/ufo3/fontinfo.plist/>`_.
+
+.. code:: xml
+
+    <instance familyname="My Font" stylename="Text Light" filename="instances/MyFont-TextLight.ufo" postscriptfontname="MyFont-TextLight" stylemapfamilyname="My Font Text Light" stylemapstylename="regular">
+        <location>
+            <dimension name="optical" xvalue="6"/>
+            <dimension name="weight" xvalue="325"/>
+        </location>
+        <lib>
+            <dict>
+                <key>public.fontInfo</key>
+                <dict>
+                    <key>openTypeNameWWSFamilyName</key>
+                    <string>My Font Text</string>
+                    <key>openTypeNameWWSSubfamilyName</key>
+                    <string>Light</string>
+                    <key>openTypeOS2WeightClass</key>
+                    <integer>300</integer>
+                    <key>trademark</key>
+                    <string>My Font Text Light is a registered trademark...</string>
+                    <key>openTypeNameRecords</key>
+                    <array>
+                        <dict>
+                            <key>encodingID</key>
+                            <integer>1</integer>
+                            <key>languageID</key>
+                            <integer>1031</integer>
+                            <key>nameID</key>
+                            <integer>7</integer>
+                            <key>platformID</key>
+                            <integer>3</integer>
+                            <key>string</key>
+                            <string>Meine Schrift Text Leicht ist eine registrierte Marke...</string>
+                        </dict>
+                    </array>
+                </dict>
+            </dict>
+        </lib>
+    </instance>
 
 ``<glyphs>`` element (instance)
 -------------------------------
@@ -1005,6 +1189,8 @@ Example for MutatorMath
 The ``<lib>`` element contains arbitrary data.
 
 - Child element of ``<designspace>``, ``<variable-font>`` and ``<instance>``
+- If present, content must be an XML Property List (plist).
+  <https://en.wikipedia.org/wiki/Property_list>__
 - Contains arbitrary data about the whole document or about a specific
   variable font or instance.
 - Items in the dict need to use **reverse domain name notation**

@@ -6,7 +6,7 @@ from fontTools.misc.loggingTools import deprecateArgument
 from fontTools.ttLib import TTLibError
 from fontTools.ttLib.ttGlyphSet import _TTGlyph, _TTGlyphSetCFF, _TTGlyphSetGlyf
 from fontTools.ttLib.sfnt import SFNTReader, SFNTWriter
-from io import BytesIO, StringIO
+from io import BytesIO, StringIO, UnsupportedOperation
 import os
 import logging
 import traceback
@@ -15,7 +15,6 @@ log = logging.getLogger(__name__)
 
 
 class TTFont(object):
-
     """Represents a TrueType font.
 
     The object manages file input and output, and offers a convenient way of
@@ -126,6 +125,7 @@ class TTFont(object):
             self.flavor = flavor
             self.flavorData = None
             return
+        seekable = True
         if not hasattr(file, "read"):
             closeStream = True
             # assume file is a string
@@ -146,11 +146,21 @@ class TTFont(object):
         else:
             # assume "file" is a readable file object
             closeStream = False
-            file.seek(0)
+            # SFNTReader wants the input file to be seekable.
+            # SpooledTemporaryFile has no seekable() on < 3.11, but still can seek:
+            # https://github.com/fonttools/fonttools/issues/3052
+            if hasattr(file, "seekable"):
+                seekable = file.seekable()
+            elif hasattr(file, "seek"):
+                try:
+                    file.seek(0)
+                except UnsupportedOperation:
+                    seekable = False
 
         if not self.lazy:
             # read input file in memory and wrap a stream around it to allow overwriting
-            file.seek(0)
+            if seekable:
+                file.seek(0)
             tmp = BytesIO(file.read())
             if hasattr(file, "name"):
                 # save reference to input file name
@@ -158,6 +168,8 @@ class TTFont(object):
             if closeStream:
                 file.close()
             file = tmp
+        elif not seekable:
+            raise TTLibError("Input file must be seekable when lazy=True")
         self._tableCache = _tableCache
         self.reader = SFNTReader(file, checkChecksums, fontNumber=fontNumber)
         self.sfntVersion = self.reader.sfntVersion
@@ -274,7 +286,6 @@ class TTFont(object):
         disassembleInstructions=True,
         bitmapGlyphDataFormat="raw",
     ):
-
         if quiet is not None:
             deprecateArgument("quiet", "configure logging instead")
 
@@ -310,12 +321,11 @@ class TTFont(object):
             writer.newline()
         else:
             path, ext = os.path.splitext(writer.filename)
-            fileNameTemplate = path + ".%s" + ext
 
         for i in range(numTables):
             tag = tables[i]
             if splitTables:
-                tablePath = fileNameTemplate % tagToIdentifier(tag)
+                tablePath = path + "." + tagToIdentifier(tag) + ext
                 tableWriter = xmlWriter.XMLWriter(
                     tablePath, newlinestr=writer.newlinestr
                 )
@@ -658,6 +668,7 @@ class TTFont(object):
                     return int(glyphName[5:])
                 except (NameError, ValueError):
                     raise KeyError(glyphName)
+            raise
 
     def getGlyphIDMany(self, lst):
         """Converts a list of glyph names into a list of glyph IDs."""
@@ -723,7 +734,9 @@ class TTFont(object):
         else:
             raise KeyError(tag)
 
-    def getGlyphSet(self, preferCFF=True, location=None, normalized=False):
+    def getGlyphSet(
+        self, preferCFF=True, location=None, normalized=False, recalcBounds=True
+    ):
         """Return a generic GlyphSet, which is a dict-like object
         mapping glyph names to glyph objects. The returned glyph objects
         have a ``.draw()`` method that supports the Pen protocol, and will
@@ -754,7 +767,7 @@ class TTFont(object):
         if ("CFF " in self or "CFF2" in self) and (preferCFF or "glyf" not in self):
             return _TTGlyphSetCFF(self, location)
         elif "glyf" in self:
-            return _TTGlyphSetGlyf(self, location)
+            return _TTGlyphSetGlyf(self, location, recalcBounds=recalcBounds)
         else:
             raise TTLibError("Font contains no outlines")
 
@@ -768,26 +781,15 @@ class TTFont(object):
 
         Raises ``TTLibError`` if the font is not a variable font.
         """
-        from fontTools.varLib.models import normalizeLocation, piecewiseLinearMap
+        from fontTools.varLib.models import normalizeLocation
 
         if "fvar" not in self:
             raise TTLibError("Not a variable font")
 
-        axes = {
-            a.axisTag: (a.minValue, a.defaultValue, a.maxValue)
-            for a in self["fvar"].axes
-        }
+        axes = self["fvar"].getAxes()
         location = normalizeLocation(location, axes)
         if "avar" in self:
-            avar = self["avar"]
-            avarSegments = avar.segments
-            mappedLocation = {}
-            for axisTag, value in location.items():
-                avarMapping = avarSegments.get(axisTag, None)
-                if avarMapping is not None:
-                    value = piecewiseLinearMap(value, avarMapping)
-                mappedLocation[axisTag] = value
-            location = mappedLocation
+            location = self["avar"].renormalizeLocation(location, self)
         return location
 
     def getBestCmap(
@@ -827,9 +829,13 @@ class TTFont(object):
         """
         return self["cmap"].getBestCmap(cmapPreferences=cmapPreferences)
 
+    def reorderGlyphs(self, new_glyph_order):
+        from .reorderGlyphs import reorderGlyphs
+
+        reorderGlyphs(self, new_glyph_order)
+
 
 class GlyphOrder(object):
-
     """A pseudo table. The glyph order isn't in the font as a separate
     table, but it's nice to present it as such in the TTX format.
     """

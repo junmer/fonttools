@@ -7,10 +7,17 @@ converter objects from otConverters.py.
 """
 import copy
 from enum import IntEnum
+from functools import reduce
+from math import radians
 import itertools
 from collections import defaultdict, namedtuple
+from fontTools.ttLib.tables.otTraverse import dfs_base_table
+from fontTools.misc.arrayTools import quantizeRect
 from fontTools.misc.roundTools import otRound
+from fontTools.misc.transform import Transform, Identity
 from fontTools.misc.textTools import bytesjoin, pad, safeEval
+from fontTools.pens.boundsPen import ControlBoundsPen
+from fontTools.pens.transformPen import TransformPen
 from .otBase import (
     BaseTable,
     FormatSwitchingBaseTable,
@@ -21,6 +28,10 @@ from .otBase import (
 from fontTools.feaLib.lookupDebugInfo import LookupDebugInfo, LOOKUP_DEBUG_INFO_KEY
 import logging
 import struct
+from typing import TYPE_CHECKING, Iterator, List, Optional, Set
+
+if TYPE_CHECKING:
+    from fontTools.ttLib.ttGlyphSet import _TTGlyphSet
 
 
 log = logging.getLogger(__name__)
@@ -527,7 +538,6 @@ class FeatureParamsCharacterVariants(FeatureParams):
 
 
 class Coverage(FormatSwitchingBaseTable):
-
     # manual implementation to get rid of glyphID dependencies
 
     def populateDefaults(self, propagator=None):
@@ -693,6 +703,9 @@ class DeltaSetIndexMap(getFormatSwitchingBaseTableClass("uint8")):
         assert inner <= 0xFFFF
         mapping.insert(index, (outer << 16) | inner)
 
+    def __getitem__(self, i):
+        return self.mapping[i] if i < len(self.mapping) else NO_VARIATION_INDEX
+
 
 class VarIdxMap(BaseTable):
     def populateDefaults(self, propagator=None):
@@ -744,6 +757,9 @@ class VarIdxMap(BaseTable):
         inner = safeEval(attrs["inner"])
         assert inner <= 0xFFFF
         mapping[glyph] = (outer << 16) | inner
+
+    def __getitem__(self, glyphName):
+        return self.mapping.get(glyphName, NO_VARIATION_INDEX)
 
 
 class VarRegionList(BaseTable):
@@ -1113,6 +1129,35 @@ class LigatureSubst(FormatSwitchingBaseTable):
         self.ligatures = ligatures
         del self.Format  # Don't need this anymore
 
+    @staticmethod
+    def _getLigatureSortKey(components):
+        # Computes a key for ordering ligatures in a GSUB Type-4 lookup.
+
+        # When building the OpenType lookup, we need to make sure that
+        # the longest sequence of components is listed first, so we
+        # use the negative length as the key for sorting.
+        # Note, we no longer need to worry about deterministic order because the
+        # ligature mapping `dict` remembers the insertion order, and this in
+        # turn depends on the order in which the ligatures are written in the FEA.
+        # Since python sort algorithm is stable, the ligatures of equal length
+        # will keep the relative order in which they appear in the feature file.
+        # For example, given the following ligatures (all starting with 'f' and
+        # thus belonging to the same LigatureSet):
+        #
+        #   feature liga {
+        #     sub f i by f_i;
+        #     sub f f f by f_f_f;
+        #     sub f f by f_f;
+        #     sub f f i by f_f_i;
+        #   } liga;
+        #
+        # this should sort to: f_f_f, f_f_i, f_i, f_f
+        # This is also what fea-rs does, see:
+        # https://github.com/adobe-type-tools/afdko/issues/1727
+        # https://github.com/fonttools/fonttools/issues/3428
+        # https://github.com/googlefonts/fontc/pull/680
+        return -len(components)
+
     def preWrite(self, font):
         self.Format = 1
         ligatures = getattr(self, "ligatures", None)
@@ -1125,13 +1170,11 @@ class LigatureSubst(FormatSwitchingBaseTable):
 
             # ligatures is map from components-sequence to lig-glyph
             newLigatures = dict()
-            for comps, lig in sorted(
-                ligatures.items(), key=lambda item: (-len(item[0]), item[0])
-            ):
+            for comps in sorted(ligatures.keys(), key=self._getLigatureSortKey):
                 ligature = Ligature()
                 ligature.Component = comps[1:]
                 ligature.CompCount = len(comps)
-                ligature.LigGlyph = lig
+                ligature.LigGlyph = ligatures[comps]
                 newLigatures.setdefault(comps[0], []).append(ligature)
             ligatures = newLigatures
 
@@ -1217,6 +1260,34 @@ class COLR(BaseTable):
             **self.__dict__,
             "LayerRecordCount": CountReference(self.__dict__, "LayerRecordCount"),
         }
+
+    def computeClipBoxes(self, glyphSet: "_TTGlyphSet", quantization: int = 1):
+        if self.Version == 0:
+            return
+
+        clips = {}
+        for rec in self.BaseGlyphList.BaseGlyphPaintRecord:
+            try:
+                clipBox = rec.Paint.computeClipBox(self, glyphSet, quantization)
+            except Exception as e:
+                from fontTools.ttLib import TTLibError
+
+                raise TTLibError(
+                    f"Failed to compute COLR ClipBox for {rec.BaseGlyph!r}"
+                ) from e
+
+            if clipBox is not None:
+                clips[rec.BaseGlyph] = clipBox
+
+        hasClipList = hasattr(self, "ClipList") and self.ClipList is not None
+        if not clips:
+            if hasClipList:
+                self.ClipList = None
+        else:
+            if not hasClipList:
+                self.ClipList = ClipList()
+                self.ClipList.Format = 1
+            self.ClipList.clips = clips
 
 
 class LookupList(BaseTable):
@@ -1493,7 +1564,7 @@ class CompositeMode(IntEnum):
 class PaintFormat(IntEnum):
     PaintColrLayers = 1
     PaintSolid = 2
-    PaintVarSolid = (3,)
+    PaintVarSolid = 3
     PaintLinearGradient = 4
     PaintVarLinearGradient = 5
     PaintRadialGradient = 6
@@ -1557,41 +1628,114 @@ class Paint(getFormatSwitchingBaseTableClass("uint8")):
         xmlWriter.endtag(tableName)
         xmlWriter.newline()
 
-    def getChildren(self, colr):
+    def iterPaintSubTables(self, colr: COLR) -> Iterator[BaseTable.SubTableEntry]:
         if self.Format == PaintFormat.PaintColrLayers:
             # https://github.com/fonttools/fonttools/issues/2438: don't die when no LayerList exists
             layers = []
             if colr.LayerList is not None:
                 layers = colr.LayerList.Paint
-            return layers[self.FirstLayerIndex : self.FirstLayerIndex + self.NumLayers]
+            yield from (
+                BaseTable.SubTableEntry(name="Layers", value=v, index=i)
+                for i, v in enumerate(
+                    layers[self.FirstLayerIndex : self.FirstLayerIndex + self.NumLayers]
+                )
+            )
+            return
 
         if self.Format == PaintFormat.PaintColrGlyph:
             for record in colr.BaseGlyphList.BaseGlyphPaintRecord:
                 if record.BaseGlyph == self.Glyph:
-                    return [record.Paint]
+                    yield BaseTable.SubTableEntry(name="BaseGlyph", value=record.Paint)
+                    return
             else:
                 raise KeyError(f"{self.Glyph!r} not in colr.BaseGlyphList")
 
-        children = []
         for conv in self.getConverters():
             if conv.tableClass is not None and issubclass(conv.tableClass, type(self)):
-                children.append(getattr(self, conv.name))
+                value = getattr(self, conv.name)
+                yield BaseTable.SubTableEntry(name=conv.name, value=value)
 
-        return children
+    def getChildren(self, colr) -> List["Paint"]:
+        # this is kept for backward compatibility (e.g. it's used by the subsetter)
+        return [p.value for p in self.iterPaintSubTables(colr)]
 
     def traverse(self, colr: COLR, callback):
         """Depth-first traversal of graph rooted at self, callback on each node."""
         if not callable(callback):
             raise TypeError("callback must be callable")
-        stack = [self]
-        visited = set()
-        while stack:
-            current = stack.pop()
-            if id(current) in visited:
-                continue
-            callback(current)
-            visited.add(id(current))
-            stack.extend(reversed(current.getChildren(colr)))
+
+        for path in dfs_base_table(
+            self, iter_subtables_fn=lambda paint: paint.iterPaintSubTables(colr)
+        ):
+            paint = path[-1].value
+            callback(paint)
+
+    def getTransform(self) -> Transform:
+        if self.Format == PaintFormat.PaintTransform:
+            t = self.Transform
+            return Transform(t.xx, t.yx, t.xy, t.yy, t.dx, t.dy)
+        elif self.Format == PaintFormat.PaintTranslate:
+            return Identity.translate(self.dx, self.dy)
+        elif self.Format == PaintFormat.PaintScale:
+            return Identity.scale(self.scaleX, self.scaleY)
+        elif self.Format == PaintFormat.PaintScaleAroundCenter:
+            return (
+                Identity.translate(self.centerX, self.centerY)
+                .scale(self.scaleX, self.scaleY)
+                .translate(-self.centerX, -self.centerY)
+            )
+        elif self.Format == PaintFormat.PaintScaleUniform:
+            return Identity.scale(self.scale)
+        elif self.Format == PaintFormat.PaintScaleUniformAroundCenter:
+            return (
+                Identity.translate(self.centerX, self.centerY)
+                .scale(self.scale)
+                .translate(-self.centerX, -self.centerY)
+            )
+        elif self.Format == PaintFormat.PaintRotate:
+            return Identity.rotate(radians(self.angle))
+        elif self.Format == PaintFormat.PaintRotateAroundCenter:
+            return (
+                Identity.translate(self.centerX, self.centerY)
+                .rotate(radians(self.angle))
+                .translate(-self.centerX, -self.centerY)
+            )
+        elif self.Format == PaintFormat.PaintSkew:
+            return Identity.skew(radians(-self.xSkewAngle), radians(self.ySkewAngle))
+        elif self.Format == PaintFormat.PaintSkewAroundCenter:
+            return (
+                Identity.translate(self.centerX, self.centerY)
+                .skew(radians(-self.xSkewAngle), radians(self.ySkewAngle))
+                .translate(-self.centerX, -self.centerY)
+            )
+        if PaintFormat(self.Format).is_variable():
+            raise NotImplementedError(f"Variable Paints not supported: {self.Format}")
+
+        return Identity
+
+    def computeClipBox(
+        self, colr: COLR, glyphSet: "_TTGlyphSet", quantization: int = 1
+    ) -> Optional[ClipBox]:
+        pen = ControlBoundsPen(glyphSet)
+        for path in dfs_base_table(
+            self, iter_subtables_fn=lambda paint: paint.iterPaintSubTables(colr)
+        ):
+            paint = path[-1].value
+            if paint.Format == PaintFormat.PaintGlyph:
+                transformation = reduce(
+                    Transform.transform,
+                    (st.value.getTransform() for st in path),
+                    Identity,
+                )
+                glyphSet[paint.Glyph].draw(TransformPen(pen, transformation))
+
+        if pen.bounds is None:
+            return None
+
+        cb = ClipBox()
+        cb.Format = int(ClipBoxFormat.Static)
+        cb.xMin, cb.yMin, cb.xMax, cb.yMax = quantizeRect(pen.bounds, quantization)
+        return cb
 
 
 # For each subtable format there is a class. However, we don't really distinguish

@@ -47,7 +47,7 @@ def updateBounds(bounds, p, min=min, max=max):
 
     Args:
         bounds: A bounding rectangle expressed as a tuple
-            ``(xMin, yMin, xMax, yMax)``.
+            ``(xMin, yMin, xMax, yMax), or None``.
         p: A 2D tuple representing a point.
         min,max: functions to compute the minimum and maximum.
 
@@ -55,6 +55,8 @@ def updateBounds(bounds, p, min=min, max=max):
         The updated bounding rectangle ``(xMin, yMin, xMax, yMax)``.
     """
     (x, y) = p
+    if bounds is None:
+        return x, y, x, y
     xMin, yMin, xMax, yMax = bounds
     return min(xMin, x), min(yMin, y), max(xMax, x), max(yMax, y)
 
@@ -280,6 +282,27 @@ def intRect(rect):
     xMax = int(math.ceil(xMax))
     yMax = int(math.ceil(yMax))
     return (xMin, yMin, xMax, yMax)
+
+
+def quantizeRect(rect, factor=1):
+    """
+    >>> bounds = (72.3, -218.4, 1201.3, 919.1)
+    >>> quantizeRect(bounds)
+    (72, -219, 1202, 920)
+    >>> quantizeRect(bounds, factor=10)
+    (70, -220, 1210, 920)
+    >>> quantizeRect(bounds, factor=100)
+    (0, -300, 1300, 1000)
+    """
+    if factor < 1:
+        raise ValueError(f"Expected quantization factor >= 1, found: {factor!r}")
+    xMin, yMin, xMax, yMax = normRect(rect)
+    return (
+        int(math.floor(xMin / factor) * factor),
+        int(math.floor(yMin / factor) * factor),
+        int(math.ceil(xMax / factor) * factor),
+        int(math.ceil(yMax / factor) * factor),
+    )
 
 
 class Vector(_Vector):

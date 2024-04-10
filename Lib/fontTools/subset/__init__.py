@@ -15,6 +15,7 @@ from fontTools.subset.util import _add_method, _uniq_sort
 from fontTools.subset.cff import *
 from fontTools.subset.svg import *
 from fontTools.varLib import varStore  # for subset_varidxes
+from fontTools.ttLib.tables._n_a_m_e import NameRecordVisitor
 import sys
 import struct
 import array
@@ -273,7 +274,7 @@ Font table options
 
   Examples:
 
-  --drop-tables-='BASE'
+  --drop-tables-=BASE
       * Drop the default set of tables but keep 'BASE'.
 
   --drop-tables+=GSUB
@@ -313,9 +314,9 @@ Font table options
 
   Examples:
 
-  --hinting-tables-='VDMX'
+  --hinting-tables-=VDMX
       * Drop font-wide hinting tables except 'VDMX'.
-  --hinting-tables=''
+  --hinting-tables=
       * Keep all font-wide hinting tables (but strip hints from glyphs).
 
 --legacy-kern
@@ -339,9 +340,9 @@ codes, see: http://www.microsoft.com/typography/otspec/name.htm
 
   --name-IDs+=7,8,9
       * Also keep Trademark, Manufacturer and Designer name entries.
-  --name-IDs=''
+  --name-IDs=
       * Drop all 'name' table entries.
-  --name-IDs='*'
+  --name-IDs=*
       * keep all 'name' table entries
 
 --name-legacy
@@ -406,6 +407,10 @@ Other font-specific options
     *not* be switched on if an intersection is found.  [default]
 --no-prune-unicode-ranges
     Don't change the 'OS/2 ulUnicodeRange*' bits.
+--prune-codepage-ranges
+    Update the 'OS/2 ulCodePageRange*' bits after subsetting.  [default]
+--no-prune-codepage-ranges
+    Don't change the 'OS/2 ulCodePageRange*' bits.
 --recalc-average-width
     Update the 'OS/2 xAvgCharWidth' field after subsetting.
 --no-recalc-average-width
@@ -437,9 +442,9 @@ Produce a subset containing the characters ' !"#$%' without performing
 size-reducing optimizations::
 
   $ pyftsubset font.ttf --unicodes="U+0020-0025" \\
-    --layout-features='*' --glyph-names --symbol-cmap --legacy-cmap \\
+    --layout-features=* --glyph-names --symbol-cmap --legacy-cmap \\
     --notdef-glyph --notdef-outline --recommended-glyphs \\
-    --name-IDs='*' --name-legacy --name-languages='*'
+    --name-IDs=* --name-legacy --name-languages=*
 """
 )
 
@@ -869,6 +874,8 @@ def subset_glyphs(self, s):
         for m in self.MarkArray.MarkRecord:
             m.Class = class_indices.index(m.Class)
         for l in self.LigatureArray.LigatureAttach:
+            if l is None:
+                continue
             for c in l.ComponentRecord:
                 c.LigatureAnchor = _list_subset(c.LigatureAnchor, class_indices)
         return bool(
@@ -887,6 +894,8 @@ def prune_post_subset(self, font, options):
             if m.MarkAnchor:
                 m.MarkAnchor.prune_hints()
         for l in self.LigatureArray.LigatureAttach:
+            if l is None:
+                continue
             for c in l.ComponentRecord:
                 for a in c.LigatureAnchor:
                     if a:
@@ -1513,6 +1522,12 @@ def closure_glyphs(self, s, cur_glyphs=None):
 def subset_glyphs(self, s):
     self.SubTable = [st for st in self.SubTable if st and st.subset_glyphs(s)]
     self.SubTableCount = len(self.SubTable)
+    if hasattr(self, "MarkFilteringSet") and self.MarkFilteringSet is not None:
+        if self.MarkFilteringSet not in s.used_mark_sets:
+            self.MarkFilteringSet = None
+            self.LookupFlag &= ~0x10
+        else:
+            self.MarkFilteringSet = s.used_mark_sets.index(self.MarkFilteringSet)
     return bool(self.SubTableCount)
 
 
@@ -2091,17 +2106,14 @@ def subset_glyphs(self, s):
         ]
         table.AttachList.GlyphCount = len(table.AttachList.AttachPoint)
     if hasattr(table, "MarkGlyphSetsDef") and table.MarkGlyphSetsDef:
-        for coverage in table.MarkGlyphSetsDef.Coverage:
+        markGlyphSets = table.MarkGlyphSetsDef
+        for coverage in markGlyphSets.Coverage:
             if coverage:
                 coverage.subset(glyphs)
 
-        # TODO: The following is disabled. If enabling, we need to go fixup all
-        # lookups that use MarkFilteringSet and map their set.
-        # indices = table.MarkGlyphSetsDef.Coverage = \
-        #   [c for c in table.MarkGlyphSetsDef.Coverage if c.glyphs]
-        # TODO: The following is disabled, as ots doesn't like it. Phew...
-        # https://github.com/khaledhosny/ots/issues/172
-        # table.MarkGlyphSetsDef.Coverage = [c if c.glyphs else None for c in table.MarkGlyphSetsDef.Coverage]
+        s.used_mark_sets = [i for i, c in enumerate(markGlyphSets.Coverage) if c.glyphs]
+        markGlyphSets.Coverage = [c for c in markGlyphSets.Coverage if c.glyphs]
+
     return True
 
 
@@ -2582,25 +2594,10 @@ def prune_post_subset(self, font, options):
 
     if self.version == 1:
         kept_labels = []
-        dropped_labels = []
         for i, label in enumerate(self.paletteEntryLabels):
             if i in retained_palette_indices:
                 kept_labels.append(label)
-            else:
-                dropped_labels.append(label)
         self.paletteEntryLabels = kept_labels
-        # Remove dropped labels from the name table.
-        name_table = font["name"]
-        name_table.names = [
-            n
-            for n in name_table.names
-            if (
-                n.nameID not in dropped_labels
-                # Only remove nameIDs in the user range and if they're not explicitly kept
-                or n.nameID < 256
-                or n.nameID in options.name_IDs
-            )
-        ]
     return bool(self.numPaletteEntries)
 
 
@@ -2912,32 +2909,10 @@ def prune_pre_subset(self, font, options):
 
 
 @_add_method(ttLib.getTableClass("name"))
-def prune_pre_subset(self, font, options):
-    nameIDs = set(options.name_IDs)
-    fvar = font.get("fvar")
-    if fvar:
-        nameIDs.update([axis.axisNameID for axis in fvar.axes])
-        nameIDs.update([inst.subfamilyNameID for inst in fvar.instances])
-        nameIDs.update(
-            [
-                inst.postscriptNameID
-                for inst in fvar.instances
-                if inst.postscriptNameID != 0xFFFF
-            ]
-        )
-    stat = font.get("STAT")
-    if stat:
-        if stat.table.AxisValueArray:
-            nameIDs.update(
-                [val_rec.ValueNameID for val_rec in stat.table.AxisValueArray.AxisValue]
-            )
-        nameIDs.update(
-            [axis_rec.AxisNameID for axis_rec in stat.table.DesignAxisRecord.Axis]
-        )
-    cpal = font.get("CPAL")
-    if cpal and cpal.version == 1:
-        nameIDs.update(cpal.paletteLabels)
-        nameIDs.update(cpal.paletteEntryLabels)
+def prune_post_subset(self, font, options):
+    visitor = NameRecordVisitor()
+    visitor.visit(font)
+    nameIDs = set(options.name_IDs) | visitor.seen
     if "*" not in options.name_IDs:
         self.names = [n for n in self.names if n.nameID in nameIDs]
     if not options.name_legacy:
@@ -3037,6 +3012,7 @@ class Options(object):
         "rand": ["rand"],
         "justify": ["jalt"],
         "private": ["Harf", "HARF", "Buzz", "BUZZ"],
+        "east_asian_spacing": ["chws", "vchw", "halt", "vhal"],
         # Complex shapers
         "arabic": [
             "init",
@@ -3081,7 +3057,6 @@ class Options(object):
     )
 
     def __init__(self, **kwargs):
-
         self.drop_tables = self._drop_tables_default[:]
         self.no_subset_tables = self._no_subset_tables_default[:]
         self.passthrough_tables = False  # keep/drop tables we can't subset
@@ -3115,6 +3090,7 @@ class Options(object):
         self.recalc_bounds = False  # Recalculate font bounding boxes
         self.recalc_timestamp = False  # Recalculate font modified timestamp
         self.prune_unicode_ranges = True  # Clear unused 'ulUnicodeRange' bits
+        self.prune_codepage_ranges = True  # Clear unused 'ulCodePageRange' bits
         self.recalc_average_width = False  # update 'xAvgCharWidth'
         self.recalc_max_context = False  # update 'usMaxContext'
         self.canonical_order = None  # Order tables as recommended
@@ -3226,7 +3202,6 @@ class Subsetter(object):
         pass
 
     def __init__(self, options=None):
-
         if not options:
             options = Options()
 
@@ -3275,7 +3250,6 @@ class Subsetter(object):
                     log.info("%s pruned", tag)
 
     def _closure_glyphs(self, font):
-
         realGlyphs = set(font.getGlyphOrder())
         self.orig_glyph_order = glyph_order = font.getGlyphOrder()
 
@@ -3436,6 +3410,7 @@ class Subsetter(object):
         del self.glyphs
 
     def _subset_glyphs(self, font):
+        self.used_mark_sets = []
         for tag in self._sort_tables(font):
             clazz = ttLib.getTableClass(tag)
 
@@ -3462,14 +3437,35 @@ class Subsetter(object):
             font.setGlyphOrder(self.new_glyph_order)
 
     def _prune_post_subset(self, font):
-        for tag in font.keys():
+        tableTags = font.keys()
+        # Prune the name table last because when we're pruning the name table,
+        # we visit each table in the font to see what name table records are
+        # still in use.
+        if "name" in tableTags:
+            tableTags.remove("name")
+            tableTags.append("name")
+        for tag in tableTags:
             if tag == "GlyphOrder":
                 continue
-            if tag == "OS/2" and self.options.prune_unicode_ranges:
-                old_uniranges = font[tag].getUnicodeRanges()
-                new_uniranges = font[tag].recalcUnicodeRanges(font, pruneOnly=True)
-                if old_uniranges != new_uniranges:
-                    log.info("%s Unicode ranges pruned: %s", tag, sorted(new_uniranges))
+            if tag == "OS/2":
+                if self.options.prune_unicode_ranges:
+                    old_uniranges = font[tag].getUnicodeRanges()
+                    new_uniranges = font[tag].recalcUnicodeRanges(font, pruneOnly=True)
+                    if old_uniranges != new_uniranges:
+                        log.info(
+                            "%s Unicode ranges pruned: %s", tag, sorted(new_uniranges)
+                        )
+                if self.options.prune_codepage_ranges and font[tag].version >= 1:
+                    # codepage range fields were added with OS/2 format 1
+                    # https://learn.microsoft.com/en-us/typography/opentype/spec/os2#version-1
+                    old_codepages = font[tag].getCodePageRanges()
+                    new_codepages = font[tag].recalcCodePageRanges(font, pruneOnly=True)
+                    if old_codepages != new_codepages:
+                        log.info(
+                            "%s CodePage ranges pruned: %s",
+                            tag,
+                            sorted(new_codepages),
+                        )
                 if self.options.recalc_average_width:
                     old_avg_width = font[tag].xAvgCharWidth
                     new_avg_width = font[tag].recalcAvgCharWidth(font)
@@ -3492,7 +3488,7 @@ class Subsetter(object):
                     log.info("%s pruned", tag)
 
     def _sort_tables(self, font):
-        tagOrder = ["fvar", "avar", "gvar", "name", "glyf"]
+        tagOrder = ["GDEF", "GPOS", "GSUB", "fvar", "avar", "gvar", "name", "glyf"]
         tagOrder = {t: i + 1 for i, t in enumerate(tagOrder)}
         tags = sorted(font.keys(), key=lambda tag: tagOrder.get(tag, 0))
         return [t for t in tags if t != "GlyphOrder"]
@@ -3506,7 +3502,6 @@ class Subsetter(object):
 
 @timer("load font")
 def load_font(fontFile, options, checkChecksums=0, dontLoadGlyphNames=False, lazy=True):
-
     font = ttLib.TTFont(
         fontFile,
         checkChecksums=checkChecksums,
@@ -3692,7 +3687,10 @@ def main(args=None):
     )
 
     if outfile is None:
-        outfile = makeOutputFileName(fontfile, overWrite=True, suffix=".subset")
+        ext = "." + options.flavor.lower() if options.flavor is not None else None
+        outfile = makeOutputFileName(
+            fontfile, extension=ext, overWrite=True, suffix=".subset"
+        )
 
     with timer("compile glyph list"):
         if wildcard_glyphs:
@@ -3735,6 +3733,3 @@ __all__ = [
     "parse_unicodes",
     "main",
 ]
-
-if __name__ == "__main__":
-    sys.exit(main())

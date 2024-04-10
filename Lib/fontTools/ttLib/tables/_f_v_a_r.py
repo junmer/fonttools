@@ -110,6 +110,9 @@ class table__f_v_a_r(DefaultTable.DefaultTable):
             instance.fromXML(name, attrs, content, ttFont)
             self.instances.append(instance)
 
+    def getAxes(self):
+        return {a.axisTag: (a.minValue, a.defaultValue, a.maxValue) for a in self.axes}
+
 
 class Axis(object):
     def __init__(self):
@@ -127,7 +130,9 @@ class Axis(object):
         sstruct.unpack2(FVAR_AXIS_FORMAT, data, self)
 
     def toXML(self, writer, ttFont):
-        name = ttFont["name"].getDebugName(self.axisNameID)
+        name = (
+            ttFont["name"].getDebugName(self.axisNameID) if "name" in ttFont else None
+        )
         if name is not None:
             writer.newline()
             writer.comment(name)
@@ -192,12 +197,20 @@ class NamedInstance(object):
             self.postscriptNameID = 0xFFFF
 
     def toXML(self, writer, ttFont):
-        name = ttFont["name"].getDebugName(self.subfamilyNameID)
+        name = (
+            ttFont["name"].getDebugName(self.subfamilyNameID)
+            if "name" in ttFont
+            else None
+        )
         if name is not None:
             writer.newline()
             writer.comment(name)
             writer.newline()
-        psname = ttFont["name"].getDebugName(self.postscriptNameID)
+        psname = (
+            ttFont["name"].getDebugName(self.postscriptNameID)
+            if "name" in ttFont
+            else None
+        )
         if psname is not None:
             writer.comment("PostScript: " + psname)
             writer.newline()

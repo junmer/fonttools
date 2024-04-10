@@ -82,12 +82,13 @@ are supported, but support for CFF2 variable fonts will be added soon.
 The discussion and implementation of these features are tracked at
 https://github.com/fonttools/fonttools/issues/1537
 """
+
 from fontTools.misc.fixedTools import (
     floatToFixedToFloat,
     strToFixedToFloat,
     otRound,
 )
-from fontTools.varLib.models import supportScalar, normalizeValue, piecewiseLinearMap
+from fontTools.varLib.models import normalizeValue, piecewiseLinearMap
 from fontTools.ttLib import TTFont
 from fontTools.ttLib.tables.TupleVariation import TupleVariation
 from fontTools.ttLib.tables import _g_l_y_f
@@ -105,6 +106,7 @@ from fontTools.misc.cliTools import makeOutputFileName
 from fontTools.varLib.instancer import solver
 import collections
 import dataclasses
+from contextlib import contextmanager
 from copy import deepcopy
 from enum import IntEnum
 import logging
@@ -139,25 +141,36 @@ def NormalizedAxisRange(minimum, maximum):
 class AxisTriple(Sequence):
     """A triple of (min, default, max) axis values.
 
-    The default value can be None, in which case the populateDefault() method can be
-    used to fill in the missing default value based on the fvar axis default.
+    Any of the values can be None, in which case the limitRangeAndPopulateDefaults()
+    method can be used to fill in the missing values based on the fvar axis values.
     """
 
-    minimum: float
-    default: Optional[float]  # if None, filled with fvar default by populateDefault
-    maximum: float
+    minimum: Optional[float]
+    default: Optional[float]
+    maximum: Optional[float]
 
     def __post_init__(self):
         if self.default is None and self.minimum == self.maximum:
             object.__setattr__(self, "default", self.minimum)
-        if not (
-            (self.minimum <= self.default <= self.maximum)
-            if self.default is not None
-            else (self.minimum <= self.maximum)
+        if (
+            (
+                self.minimum is not None
+                and self.default is not None
+                and self.minimum > self.default
+            )
+            or (
+                self.default is not None
+                and self.maximum is not None
+                and self.default > self.maximum
+            )
+            or (
+                self.minimum is not None
+                and self.maximum is not None
+                and self.minimum > self.maximum
+            )
         ):
             raise ValueError(
-                f"{type(self).__name__} minimum ({self.minimum}) must be <= default "
-                f"({self.default}) which must be <= maximum ({self.maximum})"
+                f"{type(self).__name__} minimum ({self.minimum}), default ({self.default}), maximum ({self.maximum}) must be in sorted order"
             )
 
     def __getitem__(self, i):
@@ -203,13 +216,13 @@ class AxisTriple(Sequence):
         default = None
         if n == 2:
             minimum, maximum = v
-        elif n == 3:
-            minimum, default, maximum = v
+        elif n >= 3:
+            return cls(*v)
         else:
             raise ValueError(f"expected sequence of 2 or 3; got {n}: {v!r}")
         return cls(minimum, default, maximum)
 
-    def populateDefault(self, fvarAxisDefault) -> "AxisTriple":
+    def limitRangeAndPopulateDefaults(self, fvarTriple) -> "AxisTriple":
         """Return a new AxisTriple with the default value filled in.
 
         Set default to fvar axis default if the latter is within the min/max range,
@@ -217,10 +230,23 @@ class AxisTriple(Sequence):
         fvar axis default.
         If the default value is already set, return self.
         """
-        if self.default is not None:
-            return self
-        default = max(self.minimum, min(self.maximum, fvarAxisDefault))
-        return dataclasses.replace(self, default=default)
+        minimum = self.minimum
+        if minimum is None:
+            minimum = fvarTriple[0]
+        default = self.default
+        if default is None:
+            default = fvarTriple[1]
+        maximum = self.maximum
+        if maximum is None:
+            maximum = fvarTriple[2]
+
+        minimum = max(minimum, fvarTriple[0])
+        maximum = max(maximum, fvarTriple[0])
+        minimum = min(minimum, fvarTriple[2])
+        maximum = min(maximum, fvarTriple[2])
+        default = max(minimum, min(maximum, default))
+
+        return AxisTriple(minimum, default, maximum)
 
 
 @dataclasses.dataclass(frozen=True, order=True, repr=False)
@@ -239,6 +265,70 @@ class NormalizedAxisTriple(AxisTriple):
                 "Normalized axis values not in -1..+1 range; got "
                 f"minimum={self.minimum:g}, default={self.default:g}, maximum={self.maximum:g})"
             )
+
+
+@dataclasses.dataclass(frozen=True, order=True, repr=False)
+class NormalizedAxisTripleAndDistances(AxisTriple):
+    """A triple of (min, default, max) normalized axis values,
+    with distances between min and default, and default and max,
+    in the *pre-normalized* space."""
+
+    minimum: float
+    default: float
+    maximum: float
+    distanceNegative: Optional[float] = 1
+    distancePositive: Optional[float] = 1
+
+    def __post_init__(self):
+        if self.default is None:
+            object.__setattr__(self, "default", max(self.minimum, min(self.maximum, 0)))
+        if not (-1.0 <= self.minimum <= self.default <= self.maximum <= 1.0):
+            raise ValueError(
+                "Normalized axis values not in -1..+1 range; got "
+                f"minimum={self.minimum:g}, default={self.default:g}, maximum={self.maximum:g})"
+            )
+
+    def reverse_negate(self):
+        v = self
+        return self.__class__(-v[2], -v[1], -v[0], v[4], v[3])
+
+    def renormalizeValue(self, v, extrapolate=True):
+        """Renormalizes a normalized value v to the range of this axis,
+        considering the pre-normalized distances as well as the new
+        axis limits."""
+
+        lower, default, upper, distanceNegative, distancePositive = self
+        assert lower <= default <= upper
+
+        if not extrapolate:
+            v = max(lower, min(upper, v))
+
+        if v == default:
+            return 0
+
+        if default < 0:
+            return -self.reverse_negate().renormalizeValue(-v, extrapolate=extrapolate)
+
+        # default >= 0 and v != default
+
+        if v > default:
+            return (v - default) / (upper - default)
+
+        # v < default
+
+        if lower >= 0:
+            return (v - default) / (default - lower)
+
+        # lower < 0 and v < default
+
+        totalDistance = distanceNegative * -lower + distancePositive * default
+
+        if v >= 0:
+            vDistance = (default - v) * distancePositive
+        else:
+            vDistance = -v * distanceNegative + distancePositive * default
+
+        return -vDistance / totalDistance
 
 
 class _BaseAxisLimits(Mapping[str, AxisTriple]):
@@ -270,39 +360,35 @@ class AxisLimits(_BaseAxisLimits):
     """Maps axis tags (str) to AxisTriple values."""
 
     def __init__(self, *args, **kwargs):
-        self.have_defaults = True
         self._data = data = {}
         for k, v in dict(*args, **kwargs).items():
             if v is None:
-                # will be filled in by populateDefaults
-                self.have_defaults = False
+                # will be filled in by limitAxesAndPopulateDefaults
                 data[k] = v
             else:
                 try:
                     triple = AxisTriple.expand(v)
                 except ValueError as e:
                     raise ValueError(f"Invalid axis limits for {k!r}: {v!r}") from e
-                if triple.default is None:
-                    # also filled in by populateDefaults
-                    self.have_defaults = False
                 data[k] = triple
 
-    def populateDefaults(self, varfont) -> "AxisLimits":
+    def limitAxesAndPopulateDefaults(self, varfont) -> "AxisLimits":
         """Return a new AxisLimits with defaults filled in from fvar table.
 
         If all axis limits already have defaults, return self.
         """
-        if self.have_defaults:
-            return self
         fvar = varfont["fvar"]
-        defaultValues = {a.axisTag: a.defaultValue for a in fvar.axes}
+        fvarTriples = {
+            a.axisTag: (a.minValue, a.defaultValue, a.maxValue) for a in fvar.axes
+        }
         newLimits = {}
         for axisTag, triple in self.items():
-            default = defaultValues[axisTag]
+            fvarTriple = fvarTriples[axisTag]
+            default = fvarTriple[1]
             if triple is None:
                 newLimits[axisTag] = AxisTriple(default, default, default)
             else:
-                newLimits[axisTag] = triple.populateDefault(default)
+                newLimits[axisTag] = triple.limitRangeAndPopulateDefaults(fvarTriple)
         return type(self)(newLimits)
 
     def normalize(self, varfont, usingAvar=True) -> "NormalizedAxisLimits":
@@ -328,8 +414,13 @@ class AxisLimits(_BaseAxisLimits):
         normalizedLimits = {}
 
         for axis_tag, triple in axes.items():
+            distanceNegative = triple[1] - triple[0]
+            distancePositive = triple[2] - triple[1]
+
             if self[axis_tag] is None:
-                normalizedLimits[axis_tag] = NormalizedAxisTriple(0, 0, 0)
+                normalizedLimits[axis_tag] = NormalizedAxisTripleAndDistances(
+                    0, 0, 0, distanceNegative, distancePositive
+                )
                 continue
 
             minV, defaultV, maxV = self[axis_tag]
@@ -338,8 +429,10 @@ class AxisLimits(_BaseAxisLimits):
                 defaultV = triple[1]
 
             avarMapping = avarSegments.get(axis_tag, None)
-            normalizedLimits[axis_tag] = NormalizedAxisTriple(
-                *(normalize(v, triple, avarMapping) for v in (minV, defaultV, maxV))
+            normalizedLimits[axis_tag] = NormalizedAxisTripleAndDistances(
+                *(normalize(v, triple, avarMapping) for v in (minV, defaultV, maxV)),
+                distanceNegative,
+                distancePositive,
             )
 
         return NormalizedAxisLimits(normalizedLimits)
@@ -352,7 +445,7 @@ class NormalizedAxisLimits(_BaseAxisLimits):
         self._data = data = {}
         for k, v in dict(*args, **kwargs).items():
             try:
-                triple = NormalizedAxisTriple.expand(v)
+                triple = NormalizedAxisTripleAndDistances.expand(v)
             except ValueError as e:
                 raise ValueError(f"Invalid axis limits for {k!r}: {v!r}") from e
             data[k] = triple
@@ -436,11 +529,15 @@ def changeTupleVariationsAxisLimits(variations, axisLimits):
 
 
 def changeTupleVariationAxisLimit(var, axisTag, axisLimit):
-    assert isinstance(axisLimit, NormalizedAxisTriple)
+    assert isinstance(axisLimit, NormalizedAxisTripleAndDistances)
 
-    # Skip when current axis is missing (i.e. doesn't participate),
+    # Skip when current axis is missing or peaks at 0 (i.e. doesn't participate)
     lower, peak, upper = var.axes.get(axisTag, (-1, 0, 1))
     if peak == 0:
+        # explicitly defined, no-op axes can be omitted
+        # https://github.com/fonttools/fonttools/issues/3453
+        if axisTag in var.axes:
+            del var.axes[axisTag]
         return [var]
     # Drop if the var 'tent' isn't well-formed
     if not (lower <= peak <= upper) or (lower < 0 and upper > 0):
@@ -486,6 +583,23 @@ def _instantiateGvarGlyph(
         if defaultDeltas:
             coordinates += _g_l_y_f.GlyphCoordinates(defaultDeltas)
 
+    glyph = glyf[glyphname]
+    if glyph.isVarComposite():
+        for component in glyph.components:
+            newLocation = {}
+            for tag, loc in component.location.items():
+                if tag not in axisLimits:
+                    newLocation[tag] = loc
+                    continue
+                if component.flags & _g_l_y_f.VarComponentFlags.AXES_HAVE_VARIATION:
+                    raise NotImplementedError(
+                        "Instancing accross VarComposite axes with variation is not supported."
+                    )
+                limits = axisLimits[tag]
+                loc = limits.renormalizeValue(loc, extrapolate=False)
+                newLocation[tag] = loc
+            component.location = newLocation
+
     # _setCoordinates also sets the hmtx/vmtx advance widths and sidebearings from
     # the four phantom points and glyph bounding boxes.
     # We call it unconditionally even if a glyph has no variations or no deltas are
@@ -505,7 +619,7 @@ def _instantiateGvarGlyph(
     if optimize:
         isComposite = glyf[glyphname].isComposite()
         for var in tupleVarStore:
-            var.optimize(coordinates, endPts, isComposite)
+            var.optimize(coordinates, endPts, isComposite=isComposite)
 
 
 def instantiateGvarGlyph(varfont, glyphname, axisLimits, optimize=True):
@@ -534,9 +648,11 @@ def instantiateGvar(varfont, axisLimits, optimize=True):
     glyphnames = sorted(
         glyf.glyphOrder,
         key=lambda name: (
-            glyf[name].getCompositeMaxpValues(glyf).maxComponentDepth
-            if glyf[name].isComposite()
-            else 0,
+            (
+                glyf[name].getCompositeMaxpValues(glyf).maxComponentDepth
+                if glyf[name].isComposite() or glyf[name].isVarComposite()
+                else 0
+            ),
             name,
         ),
     )
@@ -586,6 +702,43 @@ def setMvarDeltas(varfont, deltas):
             )
 
 
+@contextmanager
+def verticalMetricsKeptInSync(varfont):
+    """Ensure hhea vertical metrics stay in sync with OS/2 ones after instancing.
+
+    When applying MVAR deltas to the OS/2 table, if the ascender, descender and
+    line gap change but they were the same as the respective hhea metrics in the
+    original font, this context manager ensures that hhea metrcs also get updated
+    accordingly.
+    The MVAR spec only has tags for the OS/2 metrics, but it is common in fonts
+    to have the hhea metrics be equal to those for compat reasons.
+
+    https://learn.microsoft.com/en-us/typography/opentype/spec/mvar
+    https://googlefonts.github.io/gf-guide/metrics.html#7-hhea-and-typo-metrics-should-be-equal
+    https://github.com/fonttools/fonttools/issues/3297
+    """
+    current_os2_vmetrics = [
+        getattr(varfont["OS/2"], attr)
+        for attr in ("sTypoAscender", "sTypoDescender", "sTypoLineGap")
+    ]
+    metrics_are_synced = current_os2_vmetrics == [
+        getattr(varfont["hhea"], attr) for attr in ("ascender", "descender", "lineGap")
+    ]
+
+    yield metrics_are_synced
+
+    if metrics_are_synced:
+        new_os2_vmetrics = [
+            getattr(varfont["OS/2"], attr)
+            for attr in ("sTypoAscender", "sTypoDescender", "sTypoLineGap")
+        ]
+        if current_os2_vmetrics != new_os2_vmetrics:
+            for attr, value in zip(
+                ("ascender", "descender", "lineGap"), new_os2_vmetrics
+            ):
+                setattr(varfont["hhea"], attr, value)
+
+
 def instantiateMVAR(varfont, axisLimits):
     log.info("Instantiating MVAR table")
 
@@ -593,7 +746,9 @@ def instantiateMVAR(varfont, axisLimits):
     fvarAxes = varfont["fvar"].axes
     varStore = mvar.VarStore
     defaultDeltas = instantiateItemVariationStore(varStore, fvarAxes, axisLimits)
-    setMvarDeltas(varfont, defaultDeltas)
+
+    with verticalMetricsKeptInSync(varfont):
+        setMvarDeltas(varfont, defaultDeltas)
 
     if varStore.VarRegionList.Region:
         varIndexMapping = varStore.optimize()
@@ -902,15 +1057,21 @@ def instantiateAvar(varfont, axisLimits):
             mappedMax = floatToFixedToFloat(
                 piecewiseLinearMap(axisRange.maximum, mapping), 14
             )
+            mappedAxisLimit = NormalizedAxisTripleAndDistances(
+                mappedMin,
+                mappedDef,
+                mappedMax,
+                axisRange.distanceNegative,
+                axisRange.distancePositive,
+            )
             newMapping = {}
             for fromCoord, toCoord in mapping.items():
-
                 if fromCoord < axisRange.minimum or fromCoord > axisRange.maximum:
                     continue
-                fromCoord = normalizeValue(fromCoord, axisRange)
+                fromCoord = axisRange.renormalizeValue(fromCoord)
 
                 assert mappedMin <= toCoord <= mappedMax
-                toCoord = normalizeValue(toCoord, (mappedMin, mappedDef, mappedMax))
+                toCoord = mappedAxisLimit.renormalizeValue(toCoord)
 
                 fromCoord = floatToFixedToFloat(fromCoord, 14)
                 toCoord = floatToFixedToFloat(toCoord, 14)
@@ -1114,7 +1275,9 @@ def instantiateVariableFont(
 
     sanityCheckVariableTables(varfont)
 
-    axisLimits = AxisLimits(axisLimits).populateDefaults(varfont)
+    axisLimits = AxisLimits(axisLimits).limitAxesAndPopulateDefaults(varfont)
+
+    log.info("Restricted limits: %s", axisLimits)
 
     normalizedLimits = axisLimits.normalize(varfont)
 
@@ -1171,6 +1334,9 @@ def instantiateVariableFont(
                     ignoreErrors=(overlap == OverlapMode.REMOVE_AND_IGNORE_ERRORS),
                 )
 
+    if "OS/2" in varfont:
+        varfont["OS/2"].recalcAvgCharWidth(varfont)
+
     varLib.set_default_weight_width_slant(
         varfont, location=axisLimits.defaultLocation()
     )
@@ -1224,29 +1390,27 @@ def parseLimits(limits: Iterable[str]) -> Dict[str, Optional[AxisTriple]]:
     result = {}
     for limitString in limits:
         match = re.match(
-            r"^(\w{1,4})=(?:(drop)|(?:([^:]+)(?:[:]([^:]+))?(?:[:]([^:]+))?))$",
+            r"^(\w{1,4})=(?:(drop)|(?:([^:]*)(?:[:]([^:]*))?(?:[:]([^:]*))?))$",
             limitString,
         )
         if not match:
             raise ValueError("invalid location format: %r" % limitString)
         tag = match.group(1).ljust(4)
-        if match.group(2):  # 'drop'
-            lbound = None
-        else:
-            lbound = strToFixedToFloat(match.group(3), precisionBits=16)
-        ubound = default = lbound
-        if match.group(4):
-            ubound = default = strToFixedToFloat(match.group(4), precisionBits=16)
-            default = None
-        if match.group(5):
-            default = ubound
-            ubound = strToFixedToFloat(match.group(5), precisionBits=16)
 
-        if all(v is None for v in (lbound, default, ubound)):
+        if match.group(2):  # 'drop'
             result[tag] = None
             continue
 
-        result[tag] = AxisTriple(lbound, default, ubound)
+        triple = match.group(3, 4, 5)
+
+        if triple[1] is None:  # "value" syntax
+            triple = (triple[0], triple[0], triple[0])
+        elif triple[2] is None:  # "min:max" syntax
+            triple = (triple[0], None, triple[1])
+
+        triple = tuple(float(v) if v else None for v in triple)
+
+        result[tag] = AxisTriple(*triple)
 
     return result
 
@@ -1275,9 +1439,11 @@ def parseArgs(args):
         metavar="AXIS=LOC",
         nargs="*",
         help="List of space separated locations. A location consists of "
-        "the tag of a variation axis, followed by '=' and one of number, "
-        "number:number or the literal string 'drop'. "
-        "E.g.: wdth=100 or wght=75.0:125.0 or wght=drop",
+        "the tag of a variation axis, followed by '=' and the literal, "
+        "string 'drop', or colon-separated list of one to three values, "
+        "each of which is the empty string, or a number. "
+        "E.g.: wdth=100 or wght=75.0:125.0 or wght=100:400:700 or wght=:500: "
+        "or wght=drop",
     )
     parser.add_argument(
         "-o",

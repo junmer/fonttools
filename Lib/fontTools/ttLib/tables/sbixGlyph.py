@@ -54,6 +54,10 @@ class Glyph(object):
                 # pad with spaces
                 self.graphicType += "    "[: (4 - len(self.graphicType))]
 
+    def is_reference_type(self):
+        """Returns True if this glyph is a reference to another glyph's image data."""
+        return self.graphicType == "dupe" or self.graphicType == "flip"
+
     def decompile(self, ttFont):
         self.glyphName = ttFont.getGlyphName(self.gid)
         if self.rawdata is None:
@@ -71,7 +75,7 @@ class Glyph(object):
                 sbixGlyphHeaderFormat, self.rawdata[:sbixGlyphHeaderFormatSize], self
             )
 
-            if self.graphicType == "dupe":
+            if self.is_reference_type():
                 # this glyph is a reference to another glyph's image data
                 (gid,) = struct.unpack(">H", self.rawdata[sbixGlyphHeaderFormatSize:])
                 self.referenceGlyphName = ttFont.getGlyphName(gid)
@@ -91,12 +95,18 @@ class Glyph(object):
             # (needed if you just want to compile the sbix table on its own)
         self.gid = struct.pack(">H", ttFont.getGlyphID(self.glyphName))
         if self.graphicType is None:
-            self.rawdata = b""
+            rawdata = b""
         else:
-            self.rawdata = sstruct.pack(sbixGlyphHeaderFormat, self) + self.imageData
+            rawdata = sstruct.pack(sbixGlyphHeaderFormat, self)
+            if self.is_reference_type():
+                rawdata += struct.pack(">H", ttFont.getGlyphID(self.referenceGlyphName))
+            else:
+                assert self.imageData is not None
+                rawdata += self.imageData
+        self.rawdata = rawdata
 
     def toXML(self, xmlWriter, ttFont):
-        if self.graphicType == None:
+        if self.graphicType is None:
             # TODO: ignore empty glyphs?
             # a glyph data entry is required for each glyph,
             # but empty ones can be calculated at compile time
@@ -111,8 +121,8 @@ class Glyph(object):
             originOffsetY=self.originOffsetY,
         )
         xmlWriter.newline()
-        if self.graphicType == "dupe":
-            # graphicType == "dupe" is a reference to another glyph id.
+        if self.is_reference_type():
+            # this glyph is a reference to another glyph id.
             xmlWriter.simpletag("ref", glyphname=self.referenceGlyphName)
         else:
             xmlWriter.begintag("hexdata")
@@ -125,12 +135,12 @@ class Glyph(object):
 
     def fromXML(self, name, attrs, content, ttFont):
         if name == "ref":
-            # glyph is a "dupe", i.e. a reference to another glyph's image data.
+            # this glyph i.e. a reference to another glyph's image data.
             # in this case imageData contains the glyph id of the reference glyph
             # get glyph id from glyphname
-            self.imageData = struct.pack(
-                ">H", ttFont.getGlyphID(safeEval("'''" + attrs["glyphname"] + "'''"))
-            )
+            glyphname = safeEval("'''" + attrs["glyphname"] + "'''")
+            self.imageData = struct.pack(">H", ttFont.getGlyphID(glyphname))
+            self.referenceGlyphName = glyphname
         elif name == "hexdata":
             self.imageData = readHex(content)
         else:

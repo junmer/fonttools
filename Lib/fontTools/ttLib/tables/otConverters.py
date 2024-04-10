@@ -146,7 +146,6 @@ class _LazyList(UserList):
 
 
 class BaseConverter(object):
-
     """Base class for converter objects. Apart from the constructor, this
     is an abstract class."""
 
@@ -154,6 +153,8 @@ class BaseConverter(object):
         self.name = name
         self.repeat = repeat
         self.aux = aux
+        if self.aux and not self.repeat:
+            self.aux = compile(self.aux, "<string>", "eval")
         self.tableClass = tableClass
         self.isCount = name.endswith("Count") or name in [
             "DesignAxisRecordSize",
@@ -571,12 +572,10 @@ class Version(SimpleValue):
 
     def read(self, reader, font, tableDict):
         value = reader.readLong()
-        assert (value >> 16) == 1, "Unsupported version 0x%08x" % value
         return value
 
     def write(self, writer, font, tableDict, value, repeatIndex=None):
         value = fi2ve(value)
-        assert (value >> 16) == 1, "Unsupported version 0x%08x" % value
         writer.writeLong(value)
 
     @staticmethod
@@ -722,7 +721,6 @@ class StructWithLength(Struct):
 
 
 class Table(Struct):
-
     staticSize = 2
 
     def readOffset(self, reader):
@@ -748,16 +746,15 @@ class Table(Struct):
         if value is None:
             self.writeNullOffset(writer)
         else:
-            subWriter = writer.getSubWriter(offsetSize=self.staticSize)
+            subWriter = writer.getSubWriter()
             subWriter.name = self.name
             if repeatIndex is not None:
                 subWriter.repeatIndex = repeatIndex
-            writer.writeSubTable(subWriter)
+            writer.writeSubTable(subWriter, offsetSize=self.staticSize)
             value.compile(subWriter, font)
 
 
 class LTable(Table):
-
     staticSize = 4
 
     def readOffset(self, reader):
@@ -769,7 +766,6 @@ class LTable(Table):
 
 # Table pointed to by a 24-bit, 3-byte long offset
 class Table24(Table):
-
     staticSize = 3
 
     def readOffset(self, reader):
@@ -1149,13 +1145,13 @@ class AATLookupWithDataOffset(BaseConverter):
             offsetByGlyph[glyph] = offset
         # For calculating the offsets to our AATLookup and data table,
         # we can use the regular OTTableWriter infrastructure.
-        lookupWriter = writer.getSubWriter(offsetSize=4)
+        lookupWriter = writer.getSubWriter()
         lookup = AATLookup("DataOffsets", None, None, UShort)
         lookup.write(lookupWriter, font, tableDict, offsetByGlyph, None)
 
-        dataWriter = writer.getSubWriter(offsetSize=4)
-        writer.writeSubTable(lookupWriter)
-        writer.writeSubTable(dataWriter)
+        dataWriter = writer.getSubWriter()
+        writer.writeSubTable(lookupWriter, offsetSize=4)
+        writer.writeSubTable(dataWriter, offsetSize=4)
         for d in compiledData:
             dataWriter.writeData(d)
 
@@ -1485,9 +1481,9 @@ class STXHeader(BaseConverter):
         )
         writer = OTTableWriter()
         for lookup in table.PerGlyphLookups:
-            lookupWriter = writer.getSubWriter(offsetSize=4)
+            lookupWriter = writer.getSubWriter()
             self.perGlyphLookup.write(lookupWriter, font, {}, lookup, None)
-            writer.writeSubTable(lookupWriter)
+            writer.writeSubTable(lookupWriter, offsetSize=4)
         return writer.getAllData()
 
     def _compileLigComponents(self, table, font):

@@ -18,7 +18,7 @@ are available at `Read the Docs <https://fonttools.readthedocs.io/>`_.
 Installation
 ~~~~~~~~~~~~
 
-FontTools requires `Python <http://www.python.org/download/>`__ 3.7
+FontTools requires `Python <http://www.python.org/download/>`__ 3.8
 or later. We try to follow the same schedule of minimum Python version support as
 NumPy (see `NEP 29 <https://numpy.org/neps/nep-0029-deprecation_policy.html>`__).
 
@@ -44,7 +44,7 @@ Python 3 `venv <https://docs.python.org/3/library/venv.html>`__ module.
     # create new virtual environment called e.g. 'fonttools-venv', or anything you like
     python -m virtualenv fonttools-venv
 
-    # source the `activate` shell script to enter the environment (Un*x); to exit, just type `deactivate`
+    # source the `activate` shell script to enter the environment (Unix-like); to exit, just type `deactivate`
     . fonttools-venv/bin/activate
 
     # to activate the virtual environment in Windows `cmd.exe`, do
@@ -137,6 +137,13 @@ are required to unlock the extra features named "ufo", etc.
     arrays and hence is very fast;
   * `munkres <https://pypi.python.org/pypi/munkres>`__: a pure-Python
     module that implements the Hungarian or Kuhn-Munkres algorithm.
+
+  To plot the results to a PDF or HTML format, you also need to install:
+
+  * `pycairo <https://pypi.org/project/pycairo/>`__: Python bindings for the
+    Cairo graphics library. Note that wheels are currently only available for
+    Windows, for other platforms see pycairo's `installation instructions
+    <https://pycairo.readthedocs.io/en/latest/getting_started.html>`__.
 
   *Extra:* ``interpolatable``
 
@@ -253,17 +260,16 @@ Acknowledgements
 In alphabetical order:
 
 aschmitz, Olivier Berten, Samyak Bhuta, Erik van Blokland, Petr van Blokland,
-Jelle Bosma, Sascha Brawer, Tom Byrer, Antonio Cavedoni, Frédéric
-Coiffier, Vincent Connare, David Corbett, Simon Cozens, Dave Crossland,
-Simon Daniels, Peter Dekkers, Behdad Esfahbod, Behnam Esfahbod, Hannes
-Famira, Sam Fishman, Matt Fontaine, Takaaki Fuji, Yannis Haralambous, Greg
-Hitchcock, Jeremie Hornus, Khaled Hosny, John Hudson, Denis Moyogo Jacquerye,
-Jack Jansen, Tom Kacvinsky, Jens Kutilek, Antoine Leca, Werner Lemberg, Tal
-Leming, Peter Lofting, Cosimo Lupo, Olli Meier, Masaya Nakamura, Dave Opstad,
-Laurence Penney, Roozbeh Pournader, Garret Rieger, Read Roberts, Colin Rofls,
-Guido van Rossum, Just van Rossum, Andreas Seidel, Georg Seifert, Chris
-Simpkins, Miguel Sousa, Adam Twardoch, Adrien Tétar, Vitaly Volkov,
-Paul Wise.
+Jelle Bosma, Sascha Brawer, Tom Byrer, Antonio Cavedoni, Frédéric Coiffier,
+Vincent Connare, David Corbett, Simon Cozens, Dave Crossland, Simon Daniels,
+Peter Dekkers, Behdad Esfahbod, Behnam Esfahbod, Hannes Famira, Sam Fishman,
+Matt Fontaine, Takaaki Fuji, Rob Hagemans, Yannis Haralambous, Greg Hitchcock,
+Jeremie Hornus, Khaled Hosny, John Hudson, Denis Moyogo Jacquerye, Jack Jansen,
+Tom Kacvinsky, Jens Kutilek, Antoine Leca, Werner Lemberg, Tal Leming, Peter
+Lofting, Cosimo Lupo, Olli Meier, Masaya Nakamura, Dave Opstad, Laurence Penney,
+Roozbeh Pournader, Garret Rieger, Read Roberts, Colin Rofls, Guido van Rossum,
+Just van Rossum, Andreas Seidel, Georg Seifert, Chris Simpkins, Miguel Sousa,
+Adam Twardoch, Adrien Tétar, Vitaly Volkov, Paul Wise.
 
 Copyrights
 ~~~~~~~~~~

@@ -1,14 +1,18 @@
 from fontTools.misc.testTools import parseXML
 from fontTools.misc.timeTools import timestampSinceEpoch
 from fontTools.ttLib import TTFont, TTLibError
+from fontTools.ttLib.tables.DefaultTable import DefaultTable
 from fontTools import ttx
+import base64
 import getopt
 import logging
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
 import pytest
 
@@ -994,6 +998,55 @@ def test_main_base_exception(tmpdir, monkeypatch, caplog):
         ttx.main(args)
 
     assert "Unhandled exception has occurred" in caplog.text
+
+
+def test_main_ttf_dump_stdin_to_stdout(tmp_path):
+    inpath = Path("Tests").joinpath("ttx", "data", "TestTTF.ttf")
+    outpath = tmp_path / "TestTTF.ttx"
+    args = [sys.executable, "-m", "fontTools.ttx", "-q", "-o", "-", "-"]
+    with inpath.open("rb") as infile, outpath.open("w", encoding="utf-8") as outfile:
+        subprocess.run(args, check=True, stdin=infile, stdout=outfile)
+    assert outpath.is_file()
+
+
+def test_main_ttx_compile_stdin_to_stdout(tmp_path):
+    inpath = Path("Tests").joinpath("ttx", "data", "TestTTF.ttx")
+    outpath = tmp_path / "TestTTF.ttf"
+    args = [sys.executable, "-m", "fontTools.ttx", "-q", "-o", "-", "-"]
+    with inpath.open("r", encoding="utf-8") as infile, outpath.open("wb") as outfile:
+        subprocess.run(args, check=True, stdin=infile, stdout=outfile)
+    assert outpath.is_file()
+
+
+def test_roundtrip_DSIG_split_at_XML_parse_buffer_size(tmp_path):
+    inpath = Path("Tests").joinpath(
+        "ttx", "data", "roundtrip_DSIG_split_at_XML_parse_buffer_size.ttx"
+    )
+    font = TTFont()
+    font.importXML(inpath)
+    font["DMMY"] = DefaultTable(tag="DMMY")
+    # just enough dummy bytes to hit the cut off point whereby DSIG data gets
+    # split into two chunks and triggers the bug from
+    # https://github.com/fonttools/fonttools/issues/2614
+    font["DMMY"].data = b"\x01\x02\x03\x04" * 2438
+    font.saveXML(tmp_path / "roundtrip_DSIG_split_at_XML_parse_buffer_size.ttx")
+
+    outpath = tmp_path / "font.ttf"
+    args = [
+        sys.executable,
+        "-m",
+        "fontTools.ttx",
+        "-q",
+        "-o",
+        str(outpath),
+        str(tmp_path / "roundtrip_DSIG_split_at_XML_parse_buffer_size.ttx"),
+    ]
+    subprocess.run(args, check=True)
+
+    assert outpath.is_file()
+    assert TTFont(outpath)["DSIG"].signatureRecords[0].pkcs7 == base64.b64decode(
+        b"0000000100000000"
+    )
 
 
 # ---------------------------

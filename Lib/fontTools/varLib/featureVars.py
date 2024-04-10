@@ -3,8 +3,9 @@ https://docs.microsoft.com/en-us/typography/opentype/spec/chapter2#featurevariat
 
 NOTE: The API is experimental and subject to change.
 """
+
 from fontTools.misc.dictTools import hashdict
-from fontTools.misc.intTools import popCount
+from fontTools.misc.intTools import bit_count
 from fontTools.ttLib import newTable
 from fontTools.ttLib.tables import otTables as ot
 from fontTools.ttLib.ttVisitor import TTVisitor
@@ -43,7 +44,18 @@ def addFeatureVariations(font, conditionalSubstitutions, featureTag="rvrn"):
     # ... ]
     # >>> addFeatureVariations(f, condSubst)
     # >>> f.save(dstPath)
+
+    The `featureTag` parameter takes either a str or a iterable of str (the single str
+    is kept for backwards compatibility), and defines which feature(s) will be
+    associated with the feature variations.
+    Note, if this is "rvrn", then the substitution lookup will be inserted at the
+    beginning of the lookup list so that it is processed before others, otherwise
+    for any other feature tags it will be appended last.
     """
+
+    # process first when "rvrn" is the only listed tag
+    featureTags = [featureTag] if isinstance(featureTag, str) else sorted(featureTag)
+    processLast = "rvrn" not in featureTags or len(featureTags) > 1
 
     _checkSubstitutionGlyphsExist(
         glyphNames=set(font.getGlyphOrder()),
@@ -58,9 +70,19 @@ def addFeatureVariations(font, conditionalSubstitutions, featureTag="rvrn"):
     )
     if "GSUB" not in font:
         font["GSUB"] = buildGSUB()
+    else:
+        existingTags = _existingVariableFeatures(font["GSUB"].table).intersection(
+            featureTags
+        )
+        if existingTags:
+            raise VarLibError(
+                f"FeatureVariations already exist for feature tag(s): {existingTags}"
+            )
 
     # setup lookups
-    lookupMap = buildSubstitutionLookups(font["GSUB"].table, allSubstitutions)
+    lookupMap = buildSubstitutionLookups(
+        font["GSUB"].table, allSubstitutions, processLast
+    )
 
     # addFeatureVariationsRaw takes a list of
     #  ( {condition}, [ lookup indices ] )
@@ -71,7 +93,17 @@ def addFeatureVariations(font, conditionalSubstitutions, featureTag="rvrn"):
             (conditionSet, [lookupMap[s] for s in substitutions])
         )
 
-    addFeatureVariationsRaw(font, font["GSUB"].table, conditionsAndLookups, featureTag)
+    addFeatureVariationsRaw(font, font["GSUB"].table, conditionsAndLookups, featureTags)
+
+
+def _existingVariableFeatures(table):
+    existingFeatureVarsTags = set()
+    if hasattr(table, "FeatureVariations") and table.FeatureVariations is not None:
+        features = table.FeatureList.FeatureRecord
+        for fvr in table.FeatureVariations.FeatureVariationRecord:
+            for ftsr in fvr.FeatureTableSubstitution.SubstitutionRecord:
+                existingFeatureVarsTags.add(features[ftsr.FeatureIndex].FeatureTag)
+    return existingFeatureVarsTags
 
 
 def _checkSubstitutionGlyphsExist(glyphNames, substitutions):
@@ -186,7 +218,7 @@ def overlayFeatureVariations(conditionalSubstitutions):
     # Generate output
     items = []
     for box, rank in sorted(
-        boxMap.items(), key=(lambda BoxAndRank: -popCount(BoxAndRank[1]))
+        boxMap.items(), key=(lambda BoxAndRank: -bit_count(BoxAndRank[1]))
     ):
         # Skip any box that doesn't have any substitution.
         if rank == 0:
@@ -241,18 +273,23 @@ def overlayBox(top, bot):
     # Remainder is empty if bot's each axis range lies within that of intersection.
     #
     # Remainder is shrank if bot's each, except for exactly one, axis range lies
-    # within that of intersection, and that one axis, it spills out of the
+    # within that of intersection, and that one axis, it extrudes out of the
     # intersection only on one side.
     #
     # Bot is returned in full as remainder otherwise, as true remainder is not
     # representable as a single box.
 
     remainder = dict(bot)
-    exactlyOne = False
-    fullyInside = False
+    extruding = False
+    fullyInside = True
+    for axisTag in top:
+        if axisTag in bot:
+            continue
+        extruding = True
+        fullyInside = False
+        break
     for axisTag in bot:
-        if axisTag not in intersection:
-            fullyInside = False
+        if axisTag not in top:
             continue  # Axis range lies fully within
         min1, max1 = intersection[axisTag]
         min2, max2 = bot[axisTag]
@@ -265,9 +302,9 @@ def overlayBox(top, bot):
 
         # If we have had an overlapping axis before, remainder is not
         # representable as a box, so return full bottom and go home.
-        if exactlyOne:
+        if extruding:
             return intersection, bot
-        exactlyOne = True
+        extruding = True
         fullyInside = False
 
         # Otherwise, cut remainder on this axis and continue.
@@ -315,48 +352,72 @@ def addFeatureVariationsRaw(font, table, conditionalSubstitutions, featureTag="r
     """Low level implementation of addFeatureVariations that directly
     models the possibilities of the FeatureVariations table."""
 
+    featureTags = [featureTag] if isinstance(featureTag, str) else sorted(featureTag)
+    processLast = "rvrn" not in featureTags or len(featureTags) > 1
+
     #
-    # if there is no <featureTag> feature:
+    # if a <featureTag> feature is not present:
     #     make empty <featureTag> feature
     #     sort features, get <featureTag> feature index
     #     add <featureTag> feature to all scripts
+    # if a <featureTag> feature is present:
+    #     reuse <featureTag> feature index
     # make lookups
     # add feature variations
     #
     if table.Version < 0x00010001:
         table.Version = 0x00010001  # allow table.FeatureVariations
 
-    table.FeatureVariations = None  # delete any existing FeatureVariations
+    varFeatureIndices = set()
 
-    varFeatureIndices = []
-    for index, feature in enumerate(table.FeatureList.FeatureRecord):
-        if feature.FeatureTag == featureTag:
-            varFeatureIndices.append(index)
+    existingTags = {
+        feature.FeatureTag
+        for feature in table.FeatureList.FeatureRecord
+        if feature.FeatureTag in featureTags
+    }
 
-    if not varFeatureIndices:
-        varFeature = buildFeatureRecord(featureTag, [])
-        table.FeatureList.FeatureRecord.append(varFeature)
+    newTags = set(featureTags) - existingTags
+    if newTags:
+        varFeatures = []
+        for featureTag in sorted(newTags):
+            varFeature = buildFeatureRecord(featureTag, [])
+            table.FeatureList.FeatureRecord.append(varFeature)
+            varFeatures.append(varFeature)
         table.FeatureList.FeatureCount = len(table.FeatureList.FeatureRecord)
 
         sortFeatureList(table)
-        varFeatureIndex = table.FeatureList.FeatureRecord.index(varFeature)
 
-        for scriptRecord in table.ScriptList.ScriptRecord:
-            if scriptRecord.Script.DefaultLangSys is None:
-                raise VarLibError(
-                    "Feature variations require that the script "
-                    f"'{scriptRecord.ScriptTag}' defines a default language system."
-                )
-            langSystems = [lsr.LangSys for lsr in scriptRecord.Script.LangSysRecord]
-            for langSys in [scriptRecord.Script.DefaultLangSys] + langSystems:
-                langSys.FeatureIndex.append(varFeatureIndex)
-                langSys.FeatureCount = len(langSys.FeatureIndex)
+        for varFeature in varFeatures:
+            varFeatureIndex = table.FeatureList.FeatureRecord.index(varFeature)
 
-        varFeatureIndices = [varFeatureIndex]
+            for scriptRecord in table.ScriptList.ScriptRecord:
+                if scriptRecord.Script.DefaultLangSys is None:
+                    raise VarLibError(
+                        "Feature variations require that the script "
+                        f"'{scriptRecord.ScriptTag}' defines a default language system."
+                    )
+                langSystems = [lsr.LangSys for lsr in scriptRecord.Script.LangSysRecord]
+                for langSys in [scriptRecord.Script.DefaultLangSys] + langSystems:
+                    langSys.FeatureIndex.append(varFeatureIndex)
+                    langSys.FeatureCount = len(langSys.FeatureIndex)
+            varFeatureIndices.add(varFeatureIndex)
+
+    if existingTags:
+        # indices may have changed if we inserted new features and sorted feature list
+        # so we must do this after the above
+        varFeatureIndices.update(
+            index
+            for index, feature in enumerate(table.FeatureList.FeatureRecord)
+            if feature.FeatureTag in existingTags
+        )
 
     axisIndices = {
         axis.axisTag: axisIndex for axisIndex, axis in enumerate(font["fvar"].axes)
     }
+
+    hasFeatureVariations = (
+        hasattr(table, "FeatureVariations") and table.FeatureVariations is not None
+    )
 
     featureVariationRecords = []
     for conditionSet, lookupIndices in conditionalSubstitutions:
@@ -369,20 +430,45 @@ def addFeatureVariationsRaw(font, table, conditionalSubstitutions, featureTag="r
             ct = buildConditionTable(axisIndices[axisTag], minValue, maxValue)
             conditionTable.append(ct)
         records = []
-        for varFeatureIndex in varFeatureIndices:
+        for varFeatureIndex in sorted(varFeatureIndices):
             existingLookupIndices = table.FeatureList.FeatureRecord[
                 varFeatureIndex
             ].Feature.LookupListIndex
+            combinedLookupIndices = (
+                existingLookupIndices + lookupIndices
+                if processLast
+                else lookupIndices + existingLookupIndices
+            )
+
             records.append(
                 buildFeatureTableSubstitutionRecord(
-                    varFeatureIndex, lookupIndices + existingLookupIndices
+                    varFeatureIndex, combinedLookupIndices
                 )
             )
-        featureVariationRecords.append(
-            buildFeatureVariationRecord(conditionTable, records)
-        )
+        if hasFeatureVariations and (
+            fvr := findFeatureVariationRecord(table.FeatureVariations, conditionTable)
+        ):
+            fvr.FeatureTableSubstitution.SubstitutionRecord.extend(records)
+            fvr.FeatureTableSubstitution.SubstitutionCount = len(
+                fvr.FeatureTableSubstitution.SubstitutionRecord
+            )
+        else:
+            featureVariationRecords.append(
+                buildFeatureVariationRecord(conditionTable, records)
+            )
 
-    table.FeatureVariations = buildFeatureVariations(featureVariationRecords)
+    if hasFeatureVariations:
+        if table.FeatureVariations.Version != 0x00010000:
+            raise VarLibError(
+                "Unsupported FeatureVariations table version: "
+                f"0x{table.FeatureVariations.Version:08x} (expected 0x00010000)."
+            )
+        table.FeatureVariations.FeatureVariationRecord.extend(featureVariationRecords)
+        table.FeatureVariations.FeatureVariationCount = len(
+            table.FeatureVariations.FeatureVariationRecord
+        )
+    else:
+        table.FeatureVariations = buildFeatureVariations(featureVariationRecords)
 
 
 #
@@ -458,27 +544,32 @@ def visit(visitor, obj, attr, value):
     setattr(obj, attr, visitor.shift + value)
 
 
-def buildSubstitutionLookups(gsub, allSubstitutions):
+def buildSubstitutionLookups(gsub, allSubstitutions, processLast=False):
     """Build the lookups for the glyph substitutions, return a dict mapping
     the substitution to lookup indices."""
 
     # Insert lookups at the beginning of the lookup vector
     # https://github.com/googlefonts/fontmake/issues/950
 
+    firstIndex = len(gsub.LookupList.Lookup) if processLast else 0
     lookupMap = {}
     for i, substitutionMap in enumerate(allSubstitutions):
-        lookupMap[substitutionMap] = i
+        lookupMap[substitutionMap] = firstIndex + i
 
-    # Shift all lookup indices in gsub by len(allSubstitutions)
-    shift = len(allSubstitutions)
-    visitor = ShifterVisitor(shift)
-    visitor.visit(gsub.FeatureList.FeatureRecord)
-    visitor.visit(gsub.LookupList.Lookup)
+    if not processLast:
+        # Shift all lookup indices in gsub by len(allSubstitutions)
+        shift = len(allSubstitutions)
+        visitor = ShifterVisitor(shift)
+        visitor.visit(gsub.FeatureList.FeatureRecord)
+        visitor.visit(gsub.LookupList.Lookup)
 
     for i, subst in enumerate(allSubstitutions):
         substMap = dict(subst)
         lookup = buildLookup([buildSingleSubstSubtable(substMap)])
-        gsub.LookupList.Lookup.insert(i, lookup)
+        if processLast:
+            gsub.LookupList.Lookup.append(lookup)
+        else:
+            gsub.LookupList.Lookup.insert(i, lookup)
         assert gsub.LookupList.Lookup[lookupMap[subst]] is lookup
     gsub.LookupList.LookupCount = len(gsub.LookupList.Lookup)
     return lookupMap
@@ -534,6 +625,21 @@ def buildConditionTable(axisIndex, filterRangeMinValue, filterRangeMaxValue):
     ct.FilterRangeMinValue = filterRangeMinValue
     ct.FilterRangeMaxValue = filterRangeMaxValue
     return ct
+
+
+def findFeatureVariationRecord(featureVariations, conditionTable):
+    """Find a FeatureVariationRecord that has the same conditionTable."""
+    if featureVariations.Version != 0x00010000:
+        raise VarLibError(
+            "Unsupported FeatureVariations table version: "
+            f"0x{featureVariations.Version:08x} (expected 0x00010000)."
+        )
+
+    for fvr in featureVariations.FeatureVariationRecord:
+        if conditionTable == fvr.ConditionSet.ConditionTable:
+            return fvr
+
+    return None
 
 
 def sortFeatureList(table):

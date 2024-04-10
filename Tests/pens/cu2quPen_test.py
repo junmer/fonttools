@@ -16,13 +16,18 @@ import sys
 import unittest
 
 from fontTools.pens.cu2quPen import Cu2QuPen, Cu2QuPointPen, Cu2QuMultiPen
-from fontTools.pens.recordingPen import RecordingPen
-from . import CUBIC_GLYPHS, QUAD_GLYPHS
-from .utils import DummyGlyph, DummyPointGlyph
-from .utils import DummyPen, DummyPointPen
+from fontTools.pens.recordingPen import RecordingPen, RecordingPointPen
 from fontTools.misc.loggingTools import CapturingLogHandler
 from textwrap import dedent
 import logging
+import pytest
+
+try:
+    from .utils import CUBIC_GLYPHS, QUAD_GLYPHS
+    from .utils import DummyGlyph, DummyPointGlyph
+    from .utils import DummyPen, DummyPointPen
+except ImportError as e:
+    pytest.skip(str(e), allow_module_level=True)
 
 
 MAX_ERR = 1.0
@@ -117,52 +122,6 @@ class TestCu2QuPen(unittest.TestCase, _TestPenMixin):
         self.pen_getter_name = "getPen"
         self.draw_method_name = "draw"
 
-    def test__check_contour_is_open(self):
-        msg = "moveTo is required"
-        quadpen = Cu2QuPen(DummyPen(), MAX_ERR)
-
-        with self.assertRaisesRegex(AssertionError, msg):
-            quadpen.lineTo((0, 0))
-        with self.assertRaisesRegex(AssertionError, msg):
-            quadpen.qCurveTo((0, 0), (1, 1))
-        with self.assertRaisesRegex(AssertionError, msg):
-            quadpen.curveTo((0, 0), (1, 1), (2, 2))
-        with self.assertRaisesRegex(AssertionError, msg):
-            quadpen.closePath()
-        with self.assertRaisesRegex(AssertionError, msg):
-            quadpen.endPath()
-
-        quadpen.moveTo((0, 0))  # now it works
-        quadpen.lineTo((1, 1))
-        quadpen.qCurveTo((2, 2), (3, 3))
-        quadpen.curveTo((4, 4), (5, 5), (6, 6))
-        quadpen.closePath()
-
-    def test__check_contour_closed(self):
-        msg = "closePath or endPath is required"
-        quadpen = Cu2QuPen(DummyPen(), MAX_ERR)
-        quadpen.moveTo((0, 0))
-
-        with self.assertRaisesRegex(AssertionError, msg):
-            quadpen.moveTo((1, 1))
-        with self.assertRaisesRegex(AssertionError, msg):
-            quadpen.addComponent("a", (1, 0, 0, 1, 0, 0))
-
-        # it works if contour is closed
-        quadpen.closePath()
-        quadpen.moveTo((1, 1))
-        quadpen.endPath()
-        quadpen.addComponent("a", (1, 0, 0, 1, 0, 0))
-
-    def test_qCurveTo_no_points(self):
-        quadpen = Cu2QuPen(DummyPen(), MAX_ERR)
-        quadpen.moveTo((0, 0))
-
-        with self.assertRaisesRegex(
-            AssertionError, "illegal qcurve segment point count: 0"
-        ):
-            quadpen.qCurveTo()
-
     def test_qCurveTo_1_point(self):
         pen = DummyPen()
         quadpen = Cu2QuPen(pen, MAX_ERR)
@@ -173,7 +132,7 @@ class TestCu2QuPen(unittest.TestCase, _TestPenMixin):
             str(pen).splitlines(),
             [
                 "pen.moveTo((0, 0))",
-                "pen.lineTo((1, 1))",
+                "pen.qCurveTo((1, 1))",
             ],
         )
 
@@ -191,15 +150,6 @@ class TestCu2QuPen(unittest.TestCase, _TestPenMixin):
             ],
         )
 
-    def test_curveTo_no_points(self):
-        quadpen = Cu2QuPen(DummyPen(), MAX_ERR)
-        quadpen.moveTo((0, 0))
-
-        with self.assertRaisesRegex(
-            AssertionError, "illegal curve segment point count: 0"
-        ):
-            quadpen.curveTo()
-
     def test_curveTo_1_point(self):
         pen = DummyPen()
         quadpen = Cu2QuPen(pen, MAX_ERR)
@@ -210,7 +160,7 @@ class TestCu2QuPen(unittest.TestCase, _TestPenMixin):
             str(pen).splitlines(),
             [
                 "pen.moveTo((0, 0))",
-                "pen.lineTo((1, 1))",
+                "pen.qCurveTo((1, 1))",
             ],
         )
 
@@ -255,59 +205,6 @@ class TestCu2QuPen(unittest.TestCase, _TestPenMixin):
                 "pen.moveTo((0, 0))",
                 "pen.qCurveTo((0.75, 0.75), (1.625, 1.625), (2, 2))",
                 "pen.qCurveTo((2.375, 2.375), (3.25, 3.25), (4, 4))",
-            ],
-        )
-
-    def test_addComponent(self):
-        pen = DummyPen()
-        quadpen = Cu2QuPen(pen, MAX_ERR)
-        quadpen.addComponent("a", (1, 2, 3, 4, 5.0, 6.0))
-
-        # components are passed through without changes
-        self.assertEqual(
-            str(pen).splitlines(),
-            [
-                "pen.addComponent('a', (1, 2, 3, 4, 5.0, 6.0))",
-            ],
-        )
-
-    def test_ignore_single_points(self):
-        pen = DummyPen()
-        try:
-            logging.captureWarnings(True)
-            with CapturingLogHandler("py.warnings", level="WARNING") as log:
-                quadpen = Cu2QuPen(pen, MAX_ERR, ignore_single_points=True)
-        finally:
-            logging.captureWarnings(False)
-        quadpen.moveTo((0, 0))
-        quadpen.endPath()
-        quadpen.moveTo((1, 1))
-        quadpen.closePath()
-
-        self.assertGreaterEqual(len(log.records), 1)
-        if sys.version_info < (3, 11):
-            self.assertIn("ignore_single_points is deprecated", log.records[0].args[0])
-        else:
-            self.assertIn("ignore_single_points is deprecated", log.records[0].msg)
-
-        # single-point contours were ignored, so the pen commands are empty
-        self.assertFalse(pen.commands)
-
-        # redraw without ignoring single points
-        quadpen.ignore_single_points = False
-        quadpen.moveTo((0, 0))
-        quadpen.endPath()
-        quadpen.moveTo((1, 1))
-        quadpen.closePath()
-
-        self.assertTrue(pen.commands)
-        self.assertEqual(
-            str(pen).splitlines(),
-            [
-                "pen.moveTo((0, 0))",
-                "pen.endPath()",
-                "pen.moveTo((1, 1))",
-                "pen.closePath()",
             ],
         )
 
@@ -442,7 +339,6 @@ pen.endPath()""".splitlines(),
 
 class TestCu2QuMultiPen(unittest.TestCase):
     def test_multi_pen(self):
-
         pens = [RecordingPen(), RecordingPen()]
         pen = Cu2QuMultiPen(pens, 0.1)
         pen.moveTo([((0, 0),), ((0, 0),)])
@@ -458,6 +354,75 @@ class TestCu2QuMultiPen(unittest.TestCase):
         for op0, op1 in zip(pens[0].value, pens[1].value):
             assert op0[0] == op0[0]
             assert op0[0] != "curveTo"
+
+
+class TestAllQuadraticFalse(unittest.TestCase):
+    def test_segment_pen_cubic(self):
+        rpen = RecordingPen()
+        pen = Cu2QuPen(rpen, 0.1, all_quadratic=False)
+
+        pen.moveTo((0, 0))
+        pen.curveTo((0, 1), (2, 1), (2, 0))
+        pen.closePath()
+
+        assert rpen.value == [
+            ("moveTo", ((0, 0),)),
+            ("curveTo", ((0, 1), (2, 1), (2, 0))),
+            ("closePath", ()),
+        ]
+
+    def test_segment_pen_quadratic(self):
+        rpen = RecordingPen()
+        pen = Cu2QuPen(rpen, 0.1, all_quadratic=False)
+
+        pen.moveTo((0, 0))
+        pen.curveTo((2, 2), (4, 2), (6, 0))
+        pen.closePath()
+
+        assert rpen.value == [
+            ("moveTo", ((0, 0),)),
+            ("qCurveTo", ((3, 3), (6, 0))),
+            ("closePath", ()),
+        ]
+
+    def test_point_pen_cubic(self):
+        rpen = RecordingPointPen()
+        pen = Cu2QuPointPen(rpen, 0.1, all_quadratic=False)
+
+        pen.beginPath()
+        pen.addPoint((0, 0), "move")
+        pen.addPoint((0, 1))
+        pen.addPoint((2, 1))
+        pen.addPoint((2, 0), "curve")
+        pen.endPath()
+
+        assert rpen.value == [
+            ("beginPath", (), {}),
+            ("addPoint", ((0, 0), "move", False, None), {}),
+            ("addPoint", ((0, 1), None, False, None), {}),
+            ("addPoint", ((2, 1), None, False, None), {}),
+            ("addPoint", ((2, 0), "curve", False, None), {}),
+            ("endPath", (), {}),
+        ]
+
+    def test_point_pen_quadratic(self):
+        rpen = RecordingPointPen()
+        pen = Cu2QuPointPen(rpen, 0.1, all_quadratic=False)
+
+        pen.beginPath()
+        pen.addPoint((0, 0), "move")
+        pen.addPoint((2, 2))
+        pen.addPoint((4, 2))
+        pen.addPoint((6, 0), "curve")
+        pen.endPath()
+
+        assert rpen.value == [
+            ("beginPath", (), {}),
+            ("addPoint", ((0, 0), "move", False, None), {}),
+            ("addPoint", ((3, 3), None, False, None), {}),
+            ("addPoint", ((6, 0), "qcurve", False, None), {}),
+            ("endPath", (), {}),
+        ]
 
 
 if __name__ == "__main__":
